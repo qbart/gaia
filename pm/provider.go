@@ -33,7 +33,7 @@ var Statuses = []Status{
 	StatusDone,
 }
 
-type System interface {
+type Provider interface {
 	ListTasks(ctx context.Context, status Status) ([]*Task, error)
 	MoveTaskTo(ctx context.Context, id TaskID, status Status) error
 	CommentTask(ctx context.Context, id TaskID) error
