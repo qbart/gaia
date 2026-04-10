@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"time"
 
 	"github.com/qbart/gaia/config"
 	"github.com/qbart/gaia/gaia"
@@ -47,6 +48,9 @@ func main() {
 	pipelineModel := tui.NewPipelineModel(spec)
 	p := tea.NewProgram(ui.NewAppModel(pipelineModel), tea.WithAltScreen())
 
+	ticker := time.NewTicker(1 * time.Second)
+	start := time.Now()
+
 	go agent.Run(ctx)
 
 	go func() {
@@ -54,6 +58,14 @@ func main() {
 			select {
 			case event := <-agent.Dispatcher:
 				Event(p, event.Kind, event.Enable)
+			case task := <-agent.Tasks:
+				p.Send(ui.StatusBarSetLeftMsg{Text: task.Name})
+			case err := <-agent.Errors:
+				p.Send(ui.StatusBarSetLeftMsg{Text: err.Error()})
+			case <-ticker.C:
+				now := time.Now()
+				duration := now.Sub(start).Round(time.Second)
+				p.Send(ui.StatusBarSetRightMsg{Text: fmt.Sprintf("%s", duration.String())})
 			}
 		}
 	}()

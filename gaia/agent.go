@@ -18,9 +18,8 @@ type Command struct {
 }
 
 type TaskCommand struct {
-	ID     pm.TaskID
-	Name   string
-	Status pm.Status
+	Name     string
+	Duration time.Duration
 }
 
 type Dispatcher chan (Command)
@@ -150,6 +149,8 @@ func (a *Agent) Do(ctx context.Context) {
 		task = a.TasksTodo.First()
 	}
 	if task != nil {
+		start := time.Now()
+		a.Tasks <- TaskCommand{Name: task.Name, Duration: time.Duration(0)}
 		for iter := 0; iter < 10; iter++ {
 			var sb strings.Builder
 			for _, doc := range a.TasksDocs.All() {
@@ -182,6 +183,9 @@ func (a *Agent) Do(ctx context.Context) {
 			}
 		}
 		a.TasksReview.Append(task)
+		now := time.Now()
+		duration := now.Sub(start)
+		a.Tasks <- TaskCommand{Name: task.Name, Duration: duration}
 	}
 }
 
