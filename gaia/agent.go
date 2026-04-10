@@ -1,7 +1,10 @@
 package gaia
 
 import (
+	"bufio"
 	"context"
+	"os/exec"
+	"strings"
 	"time"
 
 	"github.com/qbart/gaia/pm"
@@ -31,6 +34,7 @@ type Agent struct {
 	TasksTodo     *Tasks
 	TasksDoing    *Tasks
 	TasksRejected *Tasks
+	TasksReview   *Tasks
 	firstRun      bool
 }
 
@@ -44,6 +48,7 @@ func NewAgent(p pm.Provider) *Agent {
 		TasksTodo:     NewTasks(),
 		TasksDoing:    NewTasks(),
 		TasksRejected: NewTasks(),
+		TasksReview:   NewTasks(),
 	}
 }
 
@@ -133,16 +138,72 @@ func (a *Agent) ReadTasks(ctx context.Context) {
 
 func (a *Agent) Do(ctx context.Context) {
 	a.Dispatcher <- Command{Kind: "do", Enable: true}
+	defer func() {
+		a.Dispatcher <- Command{Kind: "do", Enable: false}
+	}()
 
-	time.Sleep(1 * time.Second)
+	task := a.TasksDoing.First()
+	if task == nil {
+		task = a.TasksRejected.First()
+	}
+	if task == nil {
+		task = a.TasksTodo.First()
+	}
+	if task != nil {
+		var sb strings.Builder
+		for _, doc := range a.TasksDocs.All() {
+			sb.WriteString(doc.Body)
+			sb.WriteString("\n\n")
+		}
+		sb.WriteString("Task to implement:\n")
+		sb.WriteString(task.Name)
+		sb.WriteString("\n\n")
+		sb.WriteString(task.Body)
+		sb.WriteString("\n\nWhen TASK is done output the: <sigil>TASK_DONE</sigil>")
 
-	a.Dispatcher <- Command{Kind: "do", Enable: false}
+		cmd := exec.CommandContext(ctx, "claude", "--output-format", "stream-json")
+		cmd.Stdin = strings.NewReader(sb.String())
+		stdout, err := cmd.StdoutPipe()
+		if err != nil {
+			a.Errors <- err
+		} else if err = cmd.Start(); err != nil {
+			a.Errors <- err
+		} else {
+			scanner := bufio.NewScanner(stdout)
+			for scanner.Scan() {
+				if strings.Contains(scanner.Text(), "<sigil>TASK_DONE</sigil>") {
+					break
+				}
+			}
+			cmd.Process.Kill()
+			cmd.Wait()
+			a.TasksReview.Append(task)
+		}
+	}
 }
 
 func (a *Agent) Report(ctx context.Context) {
 	a.Dispatcher <- Command{Kind: "report", Enable: true}
 
-	time.Sleep(1 * time.Second)
+	tasks := a.TasksReview.All()
+	for _, task := range tasks {
+		summaryPrompt := "In 1-2 sentences summarize what was implemented for this task. Be concise and technical.\n\nTask: " + task.Name + "\n\n" + task.Body
+		summary := ""
+		summaryCmd := exec.CommandContext(ctx, "claude", "--output-format", "text")
+		summaryCmd.Stdin = strings.NewReader(summaryPrompt)
+		if out, err := summaryCmd.Output(); err != nil {
+			a.Errors <- err
+		} else {
+			summary = strings.TrimSpace(string(out))
+		}
+		if err := a.Provider.MoveTaskTo(ctx, task.ID, pm.StatusInReview); err != nil {
+			a.Errors <- err
+		}
+		if err := a.Provider.CommentTask(ctx, task.ID, summary); err != nil {
+			a.Errors <- err
+		}
+	}
+	a.TasksReview.Reset()
 
 	a.Dispatcher <- Command{Kind: "report", Enable: false}
 }

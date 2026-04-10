@@ -31,3 +31,29 @@ func (t *Tasks) Len() int {
 
 	return len(t.Data)
 }
+
+func (t *Tasks) First() *pm.Task {
+	t.mux.RLock()
+	defer t.mux.RUnlock()
+
+	if len(t.Data) == 0 {
+		return nil
+	}
+	return t.Data[0]
+}
+
+func (t *Tasks) All() []*pm.Task {
+	t.mux.RLock()
+	defer t.mux.RUnlock()
+
+	snapshot := make([]*pm.Task, len(t.Data))
+	copy(snapshot, t.Data)
+	return snapshot
+}
+
+func (t *Tasks) Reset() {
+	t.mux.Lock()
+	defer t.mux.Unlock()
+
+	t.Data = t.Data[:0]
+}

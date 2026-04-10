@@ -41,6 +41,7 @@ func (g *GitHub) ListTasks(ctx context.Context, status Status) ([]*Task, error) 
 	tasks := make([]*Task, 0, len(issues))
 	for _, issue := range issues {
 		tasks = append(tasks, &Task{
+			ID:     TaskID(fmt.Sprintf("%d", issue.GetNumber())),
 			Name:   fmt.Sprintf("#%d %s", issue.GetNumber(), issue.GetTitle()),
 			Body:   issue.GetBody(),
 			Status: status,
@@ -89,13 +90,12 @@ func (g *GitHub) MoveTaskTo(ctx context.Context, id TaskID, status Status) error
 	return err
 }
 
-func (g *GitHub) CommentTask(ctx context.Context, id TaskID) error {
+func (g *GitHub) CommentTask(ctx context.Context, id TaskID, body string) error {
 	num, err := issueNumber(id)
 	if err != nil {
 		return err
 	}
 
-	body := ""
 	_, _, err = g.client.Issues.CreateComment(ctx, g.owner, g.repo, num, &github.IssueComment{Body: &body})
 	return err
 }
