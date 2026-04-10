@@ -40,11 +40,25 @@ func (g *GitHub) ListTasks(ctx context.Context, status Status) ([]*Task, error) 
 
 	tasks := make([]*Task, 0, len(issues))
 	for _, issue := range issues {
+		num := issue.GetNumber()
+		comments, _, err := g.client.Issues.ListComments(ctx, g.owner, g.repo, num, &github.IssueListCommentsOptions{
+			ListOptions: github.ListOptions{PerPage: 100},
+		})
+		if err != nil {
+			return nil, err
+		}
+		bodies := make([]string, 0, len(comments))
+		for _, c := range comments {
+			if body := c.GetBody(); body != "" {
+				bodies = append(bodies, body)
+			}
+		}
 		tasks = append(tasks, &Task{
-			ID:     TaskID(fmt.Sprintf("%d", issue.GetNumber())),
-			Name:   fmt.Sprintf("#%d %s", issue.GetNumber(), issue.GetTitle()),
-			Body:   issue.GetBody(),
-			Status: status,
+			ID:       TaskID(fmt.Sprintf("%d", num)),
+			Name:     fmt.Sprintf("#%d %s", num, issue.GetTitle()),
+			Body:     issue.GetBody(),
+			Status:   status,
+			Comments: bodies,
 		})
 	}
 	return tasks, nil
