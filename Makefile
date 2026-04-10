@@ -10,4 +10,4 @@ build:
 .PHONY: install
 install: build
 	mkdir -p ~/bin
-	cp build/gaia ~/bin/install
+	cp build/gaia ~/bin/gaia

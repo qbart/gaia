@@ -149,6 +149,9 @@ func (a *Agent) Do(ctx context.Context) {
 		task = a.TasksTodo.First()
 	}
 	if task != nil {
+		if err := a.Provider.MoveTaskTo(ctx, task.ID, pm.StatusInProgress); err != nil {
+			a.Errors <- err
+		}
 		start := time.Now()
 		a.Tasks <- TaskCommand{Name: task.Name, Duration: time.Duration(0)}
 		for iter := 0; iter < 10; iter++ {
