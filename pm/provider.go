@@ -16,7 +16,6 @@ type Task struct {
 
 const (
 	StatusDocs       Status = "docs"
-	StatusBacklog    Status = "backlog"
 	StatusTodo       Status = "todo"
 	StatusInProgress Status = "doing"
 	StatusInReview   Status = "review"
@@ -26,7 +25,6 @@ const (
 
 var Statuses = []Status{
 	StatusDocs,
-	StatusBacklog,
 	StatusTodo,
 	StatusInProgress,
 	StatusInReview,
