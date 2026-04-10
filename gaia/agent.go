@@ -14,11 +14,18 @@ type Command struct {
 	Tasks  int
 }
 
+type TaskCommand struct {
+	ID     pm.TaskID
+	Name   string
+	Status pm.Status
+}
+
 type Dispatcher chan (Command)
 
 type Agent struct {
 	Errors        chan (error)
 	Dispatcher    chan (Command)
+	Tasks         chan (TaskCommand)
 	Provider      pm.Provider
 	TasksDocs     *Tasks
 	TasksTodo     *Tasks
@@ -31,6 +38,7 @@ func NewAgent(p pm.Provider) *Agent {
 	return &Agent{
 		Dispatcher:    make(Dispatcher),
 		Errors:        make(chan error),
+		Tasks:         make(chan TaskCommand),
 		Provider:      p,
 		TasksDocs:     NewTasks(),
 		TasksTodo:     NewTasks(),
@@ -43,17 +51,26 @@ func (a *Agent) Run(ctx context.Context) {
 	for {
 		a.Wait(ctx)
 		a.ReadTasks(ctx)
-		a.Do(ctx)
-		a.Report(ctx)
-		a.Sync(ctx)
+
+		if a.WorkableTasks() > 0 {
+			a.Do(ctx)
+			a.Report(ctx)
+			a.Sync(ctx)
+		}
 	}
 }
 
 func (a *Agent) Wait(ctx context.Context) {
+	// dont wait for the first time
 	if a.firstRun {
 		a.firstRun = false
 		return
 	}
+	if a.WorkableTasks() > 0 {
+		// we have job to do, no need to wait
+		return
+	}
+
 	a.Dispatcher <- Command{Kind: "wait", Enable: true}
 	time.Sleep(5 * time.Second)
 	a.Dispatcher <- Command{Kind: "wait", Enable: false}
@@ -103,10 +120,15 @@ func (a *Agent) ReadTasks(ctx context.Context) {
 		a.Errors <- err
 	}
 
-	a.Dispatcher <- Command{Kind: "read-docs", Enable: false, Tasks: a.TasksDocs.Len()}
-	a.Dispatcher <- Command{Kind: "read-todo", Enable: false, Tasks: a.TasksTodo.Len()}
-	a.Dispatcher <- Command{Kind: "read-doing", Enable: false, Tasks: a.TasksDoing.Len()}
-	a.Dispatcher <- Command{Kind: "read-rejected", Enable: false, Tasks: a.TasksRejected.Len()}
+	docs := a.TasksDocs.Len()
+	todo := a.TasksTodo.Len()
+	doing := a.TasksDoing.Len()
+	rejected := a.TasksRejected.Len()
+
+	a.Dispatcher <- Command{Kind: "read-docs", Enable: false, Tasks: docs}
+	a.Dispatcher <- Command{Kind: "read-todo", Enable: false, Tasks: todo}
+	a.Dispatcher <- Command{Kind: "read-doing", Enable: false, Tasks: doing}
+	a.Dispatcher <- Command{Kind: "read-rejected", Enable: false, Tasks: rejected}
 }
 
 func (a *Agent) Do(ctx context.Context) {
@@ -131,4 +153,8 @@ func (a *Agent) Sync(ctx context.Context) {
 	time.Sleep(1 * time.Second)
 
 	a.Dispatcher <- Command{Kind: "sync", Enable: false}
+}
+
+func (a *Agent) WorkableTasks() int {
+	return a.TasksDoing.Len() + a.TasksRejected.Len() + a.TasksTodo.Len()
 }

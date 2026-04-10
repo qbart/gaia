@@ -8,6 +8,7 @@ import (
 	"github.com/qbart/gaia/config"
 	"github.com/qbart/gaia/gaia"
 	"github.com/qbart/gaia/pm"
+	"github.com/qbart/gaia/ui"
 	"github.com/qbart/tui/tui"
 
 	tea "github.com/charmbracelet/bubbletea"
@@ -44,7 +45,7 @@ func main() {
 	})
 
 	pipelineModel := tui.NewPipelineModel(spec)
-	p := tea.NewProgram(pipelineModel, tea.WithAltScreen())
+	p := tea.NewProgram(ui.NewAppModel(pipelineModel), tea.WithAltScreen())
 
 	go agent.Run(ctx)
 
