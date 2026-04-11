@@ -114,6 +114,7 @@ func (a *Agent) ReadTasks(ctx context.Context) {
 			return err
 		}
 		a.TasksDocs.Append(tasks...)
+		a.TasksDocs.Sort()
 		return nil
 	})
 	g.Go(func() error {
@@ -122,6 +123,7 @@ func (a *Agent) ReadTasks(ctx context.Context) {
 			return err
 		}
 		a.TasksBrainstorm.Append(tasks...)
+		a.TasksBrainstorm.Sort()
 		return nil
 	})
 	g.Go(func() error {
@@ -130,6 +132,7 @@ func (a *Agent) ReadTasks(ctx context.Context) {
 			return err
 		}
 		a.TasksTodo.Append(tasks...)
+		a.TasksTodo.Sort()
 		return nil
 	})
 	g.Go(func() error {
@@ -138,6 +141,7 @@ func (a *Agent) ReadTasks(ctx context.Context) {
 			return err
 		}
 		a.TasksDoing.Append(tasks...)
+		a.TasksDoing.Sort()
 		return nil
 	})
 	g.Go(func() error {
@@ -146,6 +150,7 @@ func (a *Agent) ReadTasks(ctx context.Context) {
 			return err
 		}
 		a.TasksRejected.Append(tasks...)
+		a.TasksRejected.Sort()
 		return nil
 	})
 	err := g.Wait()

@@ -1,6 +1,9 @@
 package gaia
 
 import (
+	"cmp"
+	"slices"
+	"strconv"
 	"sync"
 
 	"github.com/qbart/gaia/pm"
@@ -56,4 +59,18 @@ func (t *Tasks) Reset() {
 	defer t.mux.Unlock()
 
 	t.Data = t.Data[:0]
+}
+
+func (t *Tasks) Sort() {
+	t.mux.Lock()
+	defer t.mux.Unlock()
+
+	slices.SortFunc(t.Data, func(a, b *pm.Task) int {
+		ai, aerr := strconv.Atoi(string(a.ID))
+		bi, berr := strconv.Atoi(string(b.ID))
+		if aerr == nil && berr == nil {
+			return cmp.Compare(ai, bi)
+		}
+		return cmp.Compare(a.ID, b.ID)
+	})
 }
