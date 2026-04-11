@@ -7,6 +7,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/joho/godotenv"
 	"github.com/qbart/gaia/gaia"
 	"github.com/qbart/gaia/pm"
 	"github.com/qbart/gaia/ui"
@@ -31,9 +32,17 @@ func main() {
 		Usage: "AI-powered task agent",
 		Flags: []cli.Flag{
 			&cli.StringFlag{
-				Name:     "project",
-				Usage:    "GitHub repository name where tasks are stored",
-				Required: true,
+				Name:  "env-file",
+				Usage: "Path to .env file to load environment variables from",
+			},
+			&cli.StringFlag{
+				Name:  "provider",
+				Usage: "Task provider: github or trello",
+				Value: "github",
+			},
+			&cli.StringFlag{
+				Name:  "project",
+				Usage: "GitHub: owner/repo. Trello: board ID",
 			},
 			&cli.StringFlag{
 				Name:  "model",
@@ -50,15 +59,32 @@ func main() {
 			},
 		},
 		Action: func(ctx context.Context, cmd *cli.Command) error {
-			parts := strings.SplitN(cmd.String("project"), "/", 2)
-			if len(parts) != 2 {
-				return fmt.Errorf("--project must be in owner/repo format")
+			if envFile := cmd.String("env-file"); envFile != "" {
+				if err := godotenv.Load(envFile); err != nil {
+					return fmt.Errorf("loading env file: %w", err)
+				}
 			}
-			gh := pm.NewGitHub(os.Getenv("PAT"), parts[0], parts[1])
-			if err := gh.Init(ctx); err != nil {
+			var provider pm.Provider
+			switch cmd.String("provider") {
+			case "github":
+				parts := strings.SplitN(cmd.String("project"), "/", 2)
+				if len(parts) != 2 {
+					return fmt.Errorf("--project must be in owner/repo format for github provider")
+				}
+				provider = pm.NewGitHub(os.Getenv("PAT"), parts[0], parts[1])
+			case "trello":
+				boardID := cmd.String("project")
+				if boardID == "" {
+					return fmt.Errorf("--project must be set to a Trello board ID")
+				}
+				provider = pm.NewTrello(os.Getenv("TRELLO_KEY"), os.Getenv("TRELLO_TOKEN"), boardID)
+			default:
+				return fmt.Errorf("unknown provider %q, must be github or trello", cmd.String("provider"))
+			}
+			if err := provider.Init(ctx); err != nil {
 				return fmt.Errorf("initializing provider: %w", err)
 			}
-			agent := gaia.NewAgent(gh, cmd.String("model"), cmd.Bool("god"), cmd.Duration("wait"))
+			agent := gaia.NewAgent(provider, cmd.String("model"), cmd.Bool("god"), cmd.Duration("wait"))
 
 			spec := tui.NewPipelineSpec("gaia", []tui.StepSpec{
 				{ID: "loop-start", JobName: "Loop start", Status: tui.StatusBlue},
