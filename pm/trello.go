@@ -77,7 +77,7 @@ func (t *Trello) ListTasks(ctx context.Context, status Status) ([]*Task, error) 
 	for _, card := range cards {
 		actions, err := card.GetActions(trello.Arguments{"filter": "commentCard"})
 		if err != nil {
-			return nil, fmt.Errorf("getting comments for card %s: %w", card.ID, err)
+			return nil, fmt.Errorf("getting comments for card %d: %w", card.IDShort, err)
 		}
 		comments := make([]string, 0, len(actions))
 		for _, a := range actions {
@@ -86,7 +86,7 @@ func (t *Trello) ListTasks(ctx context.Context, status Status) ([]*Task, error) 
 			}
 		}
 		tasks = append(tasks, &Task{
-			ID:       TaskID(card.ID),
+			ID:       TaskID(card.ShortLink),
 			Name:     fmt.Sprintf("#%d %s", card.IDShort, card.Name),
 			Body:     card.Desc,
 			Status:   status,
@@ -112,7 +112,7 @@ func (t *Trello) CreateTask(ctx context.Context, task Task) (TaskID, error) {
 	if err := c.CreateCard(card, trello.Defaults()); err != nil {
 		return "", fmt.Errorf("creating card: %w", err)
 	}
-	return TaskID(card.ID), nil
+	return TaskID(card.ShortLink), nil
 }
 
 func (t *Trello) MoveTaskTo(ctx context.Context, id TaskID, status Status) error {
