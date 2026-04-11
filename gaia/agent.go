@@ -185,7 +185,7 @@ func (a *Agent) Do(ctx context.Context) {
 					sb.WriteString("\n")
 				}
 			}
-			sb.WriteString("\n\nWhen TASK is done, write a brief markdown summary of the changes made to .gaia/")
+			sb.WriteString("\n\nWhen TASK is done, write a brief summary for future github issue comment of the changes made to .gaia/")
 			sb.WriteString(string(task.ID))
 			sb.WriteString(".md")
 
