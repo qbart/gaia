@@ -176,7 +176,12 @@ func (a *Agent) Do(ctx context.Context) {
 			sb.WriteString(string(task.ID))
 			sb.WriteString(".md")
 
-			cmd := exec.CommandContext(ctx, "claude", "-p", "--output-format", "stream-json", "--verbose")
+			cmd := exec.CommandContext(ctx, "claude", "-p",
+				"--output-format", "stream-json",
+				"--verbose",
+				"--allowedTools", "Bash(git diff *),Bash(git log *),Bash(git status *)",
+				"--permission-mode", "acceptEdits",
+			)
 			cmd.Stdin = strings.NewReader(sb.String())
 			if err := cmd.Run(); err != nil {
 				a.Errors <- err
