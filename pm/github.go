@@ -22,6 +22,54 @@ func NewGitHub(token, owner, repo string) *GitHub {
 	}
 }
 
+var statusColors = map[Status]string{
+	StatusDocs:       "d876e3",
+	StatusBrainstorm: "d876e3",
+	StatusTodo:       "0d9488",
+	StatusInProgress: "f9a825",
+	StatusInReview:   "b91c1c",
+	StatusRejected:   "0d9488",
+	StatusDone:       "0e8a16",
+}
+
+var statusDescriptions = map[Status]string{
+	StatusDocs:       "Instructions for AI",
+	StatusBrainstorm: "Instructions for AI to come up with new tasks when nothing to work on",
+	StatusTodo:       "Tasks to be picked up by Claude",
+	StatusInProgress: "Claude picked it up and is currently working on it",
+	StatusInReview:   "Claude finished and marked the issue for review, will not be picked unless rejected",
+	StatusRejected:   "Review is rejected, Claude will pick it up again and apply feedback from comments",
+	StatusDone:       "Review is approved, task is closed",
+}
+
+func (g *GitHub) Init(ctx context.Context) error {
+	existing, _, err := g.client.Issues.ListLabels(ctx, g.owner, g.repo, &github.ListOptions{PerPage: 100})
+	if err != nil {
+		return fmt.Errorf("listing labels: %w", err)
+	}
+	have := make(map[string]bool, len(existing))
+	for _, l := range existing {
+		have[l.GetName()] = true
+	}
+	for _, s := range Statuses {
+		name := string(s)
+		if have[name] {
+			continue
+		}
+		color := statusColors[s]
+		desc := statusDescriptions[s]
+		_, _, err := g.client.Issues.CreateLabel(ctx, g.owner, g.repo, &github.Label{
+			Name:        &name,
+			Color:       &color,
+			Description: &desc,
+		})
+		if err != nil {
+			return fmt.Errorf("creating label %q: %w", name, err)
+		}
+	}
+	return nil
+}
+
 func (g *GitHub) ListTasks(ctx context.Context, status Status) ([]*Task, error) {
 	opts := &github.IssueListByRepoOptions{
 		State: "open",

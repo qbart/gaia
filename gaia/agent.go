@@ -91,14 +91,14 @@ func (a *Agent) Wait(ctx context.Context) {
 		a.firstRun = false
 		return
 	}
-	if a.WorkableTasks() > 0 {
-		// we have job to do, no need to wait
-		return
-	}
-
 	wait := a.WaitDuration
 	if a.RateLimit {
 		wait = 5 * time.Minute
+	} else {
+		if a.WorkableTasks() > 0 {
+			// we have job to do, no need to wait
+			return
+		}
 	}
 
 	a.Dispatcher <- Command{Kind: "wait", Enable: true}

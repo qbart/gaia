@@ -35,6 +35,7 @@ var Statuses = []Status{
 }
 
 type Provider interface {
+	Init(ctx context.Context) error
 	ListTasks(ctx context.Context, status Status) ([]*Task, error)
 	CreateTask(ctx context.Context, task Task) (TaskID, error)
 	MoveTaskTo(ctx context.Context, id TaskID, status Status) error

@@ -46,7 +46,7 @@ func main() {
 			&cli.DurationFlag{
 				Name:  "wait",
 				Usage: "Default wait duration between loops",
-				Value: 15 * time.Second,
+				Value: 30 * time.Second,
 			},
 		},
 		Action: func(ctx context.Context, cmd *cli.Command) error {
@@ -55,6 +55,9 @@ func main() {
 				return fmt.Errorf("--project must be in owner/repo format")
 			}
 			gh := pm.NewGitHub(os.Getenv("PAT"), parts[0], parts[1])
+			if err := gh.Init(ctx); err != nil {
+				return fmt.Errorf("initializing provider: %w", err)
+			}
 			agent := gaia.NewAgent(gh, cmd.String("model"), cmd.Bool("god"), cmd.Duration("wait"))
 
 			spec := tui.NewPipelineSpec("gaia", []tui.StepSpec{

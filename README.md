@@ -20,11 +20,11 @@ gaia --god --project qbart/gaia --model sonnet
 - `--project` - source of github issues
 - `--model` - overwrite the default claude model (default opus)
 
-Following lables must be created in repo:
+Following lables must exist in repo (they are created when gaia starts):
 - `docs` (instructions for AI)
 - `todo` (tasks to be picked up by claude)
 - `doing` (claude picked it up and it is currnently working on it)
-- `review` (claude finished and mark the issue for review by us, it will not be picked unless rejected)
+- `review` (claude finished and marked the issue for review by us, it will not be picked unless rejected)
 - `rejected` (review is rejected and claude will pick it up again and apply feedback from comments)
 - `done` (review is approved and we can close the task)
 - `brainstorm` (instructions for AI to come up with new tasks when nothing to work on, no brainstorm = no brainstorming)
