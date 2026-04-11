@@ -1,6 +1,7 @@
 package gaia
 
 import (
+	"bufio"
 	"context"
 	"os"
 	"os/exec"
@@ -28,6 +29,7 @@ type Agent struct {
 	Errors        chan (error)
 	Dispatcher    chan (Command)
 	Tasks         chan (TaskCommand)
+	Output        chan string
 	Provider      pm.Provider
 	TasksDocs     *Tasks
 	TasksTodo     *Tasks
@@ -42,6 +44,7 @@ func NewAgent(p pm.Provider) *Agent {
 		Dispatcher:    make(Dispatcher),
 		Errors:        make(chan error),
 		Tasks:         make(chan TaskCommand),
+		Output:        make(chan string, 256),
 		Provider:      p,
 		TasksDocs:     NewTasks(),
 		TasksTodo:     NewTasks(),
@@ -183,8 +186,23 @@ func (a *Agent) Do(ctx context.Context) {
 				"--permission-mode", "acceptEdits",
 			)
 			cmd.Stdin = strings.NewReader(sb.String())
-			if err := cmd.Run(); err != nil {
+			stdout, err := cmd.StdoutPipe()
+			if err != nil {
 				a.Errors <- err
+			} else if err = cmd.Start(); err != nil {
+				a.Errors <- err
+			} else {
+				scanner := bufio.NewScanner(stdout)
+				scanner.Buffer(make([]byte, 1024*1024), 1024*1024)
+				for scanner.Scan() {
+					select {
+					case a.Output <- scanner.Text():
+					default:
+					}
+				}
+				if err := cmd.Wait(); err != nil {
+					a.Errors <- err
+				}
 			}
 			if _, err := os.Stat(".gaia/" + string(task.ID) + ".md"); err == nil {
 				break

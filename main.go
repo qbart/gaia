@@ -31,6 +31,7 @@ func main() {
 	agent := gaia.NewAgent(gh)
 
 	fmt.Println(config.Name)
+	fmt.Println("Hello, World!")
 	spec := tui.NewPipelineSpec("gaia", []tui.StepSpec{
 		{ID: "loop-start", JobName: "Loop start", Status: tui.StatusBlue},
 		{ID: "wait", JobName: "Wait for tasks", DependsOn: []tui.StepID{"loop-start"}},
@@ -62,6 +63,8 @@ func main() {
 				p.Send(ui.StatusBarSetLeftMsg{Text: task.Name})
 			case err := <-agent.Errors:
 				p.Send(ui.StatusBarSetLeftMsg{Text: err.Error()})
+			case line := <-agent.Output:
+				p.Send(ui.AppendOutputMsg{Text: line})
 			case <-ticker.C:
 				now := time.Now()
 				duration := now.Sub(start).Round(time.Second)
