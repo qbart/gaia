@@ -5,6 +5,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"fmt"
 	"os"
 	"os/exec"
 	"strings"
@@ -23,27 +24,28 @@ type Command struct {
 type TaskCommand struct {
 	Name     string
 	Duration time.Duration
+	Finished bool
 }
 
 type Dispatcher chan (Command)
 
 type Agent struct {
-	Errors           chan (error)
-	Dispatcher       chan (Command)
-	Tasks            chan (TaskCommand)
-	Output           chan string
-	Provider         pm.Provider
-	Model            string
-	GodMode          bool
-	TasksDocs        *Tasks
-	TasksBrainstorm  *Tasks
-	TasksTodo        *Tasks
-	TasksDoing       *Tasks
-	TasksRejected    *Tasks
-	TasksReview      *Tasks
-	firstRun         bool
-	RateLimit        bool
-	WaitDuration     time.Duration
+	Errors          chan (error)
+	Dispatcher      chan (Command)
+	Tasks           chan (TaskCommand)
+	Output          chan string
+	Provider        pm.Provider
+	Model           string
+	GodMode         bool
+	TasksDocs       *Tasks
+	TasksBrainstorm *Tasks
+	TasksTodo       *Tasks
+	TasksDoing      *Tasks
+	TasksRejected   *Tasks
+	TasksReview     *Tasks
+	firstRun        bool
+	RateLimit       bool
+	WaitDuration    time.Duration
 }
 
 func NewAgent(p pm.Provider, model string, god bool, waitDuration time.Duration) *Agent {
@@ -73,8 +75,10 @@ func (a *Agent) Run(ctx context.Context) {
 
 		if a.WorkableTasks() > 0 {
 			a.Do(ctx)
-			a.Report(ctx)
-			a.Sync(ctx)
+			if !a.RateLimit {
+				a.Report(ctx)
+				a.Sync(ctx)
+			}
 		} else if a.TasksBrainstorm.Len() > 0 {
 			a.Brainstorm(ctx)
 		}
@@ -261,14 +265,19 @@ func (a *Agent) Do(ctx context.Context) {
 					a.Errors <- err
 				}
 			}
+			if a.RateLimit {
+				break
+			}
 			if _, err := os.Stat(".gaia/" + string(task.ID) + ".md"); err == nil {
 				break
 			}
 		}
-		a.TasksReview.Append(task)
+		if !a.RateLimit {
+			a.TasksReview.Append(task)
+		}
 		now := time.Now()
 		duration := now.Sub(start)
-		a.Tasks <- TaskCommand{Name: task.Name, Duration: duration}
+		a.Tasks <- TaskCommand{Name: task.Name, Duration: duration, Finished: true}
 	}
 }
 
@@ -440,5 +449,6 @@ func (a *Agent) detectRateLimit(line string) {
 	}
 	if ev.Type == "rate_limit_event" && ev.RateLimitInfo != nil {
 		a.RateLimit = true
+		a.Errors <- fmt.Errorf("rate limit hit, waiting 5m before next attempt")
 	}
 }

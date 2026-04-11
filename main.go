@@ -87,7 +87,11 @@ func main() {
 					case event := <-agent.Dispatcher:
 						Event(p, event.Kind, event.Enable)
 					case task := <-agent.Tasks:
-						p.Send(ui.StatusBarSetLeftMsg{Text: task.Name})
+						if task.Finished {
+							p.Send(ui.StatusBarSetLeftMsg{Text: ""})
+						} else {
+							p.Send(ui.StatusBarSetLeftMsg{Text: task.Name})
+						}
 					case err := <-agent.Errors:
 						p.Send(ui.StatusBarSetLeftMsg{Text: err.Error()})
 					case line := <-agent.Output:
