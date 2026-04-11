@@ -31,6 +31,8 @@ type Agent struct {
 	Tasks         chan (TaskCommand)
 	Output        chan string
 	Provider      pm.Provider
+	Model         string
+	GodMode       bool
 	TasksDocs     *Tasks
 	TasksTodo     *Tasks
 	TasksDoing    *Tasks
@@ -39,13 +41,16 @@ type Agent struct {
 	firstRun      bool
 }
 
-func NewAgent(p pm.Provider) *Agent {
+func NewAgent(p pm.Provider, model string, god bool) *Agent {
 	return &Agent{
+		firstRun:      true,
 		Dispatcher:    make(Dispatcher),
 		Errors:        make(chan error),
 		Tasks:         make(chan TaskCommand),
 		Output:        make(chan string, 256),
 		Provider:      p,
+		Model:         model,
+		GodMode:       god,
 		TasksDocs:     NewTasks(),
 		TasksTodo:     NewTasks(),
 		TasksDoing:    NewTasks(),
@@ -179,12 +184,24 @@ func (a *Agent) Do(ctx context.Context) {
 			sb.WriteString(string(task.ID))
 			sb.WriteString(".md")
 
-			cmd := exec.CommandContext(ctx, "claude", "-p",
+			args := []string{"-p",
 				"--output-format", "stream-json",
 				"--verbose",
 				"--allowedTools", "Bash(git diff *),Bash(git log *),Bash(git status *)",
-				"--permission-mode", "acceptEdits",
-			)
+				"--permission-mode", "auto",
+			}
+			if a.GodMode {
+				args = []string{"-p",
+					"--output-format", "stream-json",
+					"--verbose",
+					"--dangerously-skip-permissions",
+				}
+			}
+
+			if a.Model != "" {
+				args = append(args, "--model", a.Model)
+			}
+			cmd := exec.CommandContext(ctx, "claude", args...)
 			cmd.Stdin = strings.NewReader(sb.String())
 			stdout, err := cmd.StdoutPipe()
 			if err != nil {
