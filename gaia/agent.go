@@ -89,6 +89,11 @@ func (a *Agent) Wait(ctx context.Context) {
 }
 
 func (a *Agent) ReadTasks(ctx context.Context) {
+	a.TasksDocs.Reset()
+	a.TasksTodo.Reset()
+	a.TasksDoing.Reset()
+	a.TasksRejected.Reset()
+
 	a.Dispatcher <- Command{Kind: "read-docs", Enable: true}
 	a.Dispatcher <- Command{Kind: "read-todo", Enable: true}
 	a.Dispatcher <- Command{Kind: "read-doing", Enable: true}
@@ -241,13 +246,13 @@ func (a *Agent) Report(ctx context.Context) {
 	os.MkdirAll(".gaia", 0755)
 	tasks := a.TasksReview.All()
 	for _, task := range tasks {
+		if err := a.Provider.MoveTaskTo(ctx, task.ID, pm.StatusInReview); err != nil {
+			a.Errors <- err
+		}
 		if note, err := os.ReadFile(".gaia/" + string(task.ID) + ".md"); err == nil {
 			if err := a.Provider.CommentTask(ctx, task.ID, string(note)); err != nil {
 				a.Errors <- err
 			}
-		}
-		if err := a.Provider.MoveTaskTo(ctx, task.ID, pm.StatusInReview); err != nil {
-			a.Errors <- err
 		}
 	}
 	a.TasksReview.Reset()
