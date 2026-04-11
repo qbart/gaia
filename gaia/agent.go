@@ -42,9 +42,11 @@ type Agent struct {
 	TasksRejected    *Tasks
 	TasksReview      *Tasks
 	firstRun         bool
+	RateLimit        bool
+	WaitDuration     time.Duration
 }
 
-func NewAgent(p pm.Provider, model string, god bool) *Agent {
+func NewAgent(p pm.Provider, model string, god bool, waitDuration time.Duration) *Agent {
 	return &Agent{
 		firstRun:        true,
 		Dispatcher:      make(Dispatcher),
@@ -54,6 +56,7 @@ func NewAgent(p pm.Provider, model string, god bool) *Agent {
 		Provider:        p,
 		Model:           model,
 		GodMode:         god,
+		WaitDuration:    waitDuration,
 		TasksDocs:       NewTasks(),
 		TasksBrainstorm: NewTasks(),
 		TasksTodo:       NewTasks(),
@@ -89,9 +92,16 @@ func (a *Agent) Wait(ctx context.Context) {
 		return
 	}
 
+	wait := a.WaitDuration
+	if a.RateLimit {
+		wait = 5 * time.Minute
+	}
+
 	a.Dispatcher <- Command{Kind: "wait", Enable: true}
-	time.Sleep(15 * time.Second)
+	time.Sleep(wait)
 	a.Dispatcher <- Command{Kind: "wait", Enable: false}
+
+	a.RateLimit = false
 }
 
 func (a *Agent) ReadTasks(ctx context.Context) {
@@ -240,8 +250,10 @@ func (a *Agent) Do(ctx context.Context) {
 				scanner := bufio.NewScanner(stdout)
 				scanner.Buffer(make([]byte, 1024*1024), 1024*1024)
 				for scanner.Scan() {
+					line := scanner.Text()
+					a.detectRateLimit(line)
 					select {
-					case a.Output <- scanner.Text():
+					case a.Output <- line:
 					default:
 					}
 				}
@@ -378,8 +390,10 @@ func (a *Agent) Brainstorm(ctx context.Context) {
 		scanner := bufio.NewScanner(stdout)
 		scanner.Buffer(make([]byte, 1024*1024), 1024*1024)
 		for scanner.Scan() {
+			line := scanner.Text()
+			a.detectRateLimit(line)
 			select {
-			case a.Output <- scanner.Text():
+			case a.Output <- line:
 			default:
 			}
 		}
@@ -412,4 +426,19 @@ func (a *Agent) Brainstorm(ctx context.Context) {
 
 func (a *Agent) WorkableTasks() int {
 	return a.TasksDoing.Len() + a.TasksRejected.Len() + a.TasksTodo.Len()
+}
+
+func (a *Agent) detectRateLimit(line string) {
+	var ev struct {
+		Type          string `json:"type"`
+		RateLimitInfo *struct {
+			Status string `json:"status"`
+		} `json:"rate_limit_info"`
+	}
+	if err := json.Unmarshal([]byte(line), &ev); err != nil {
+		return
+	}
+	if ev.Type == "rate_limit_event" && ev.RateLimitInfo != nil {
+		a.RateLimit = true
+	}
 }

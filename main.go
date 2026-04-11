@@ -43,6 +43,11 @@ func main() {
 				Name:  "god",
 				Usage: "Use dangerous permission mode (bypassPermissions)",
 			},
+			&cli.DurationFlag{
+				Name:  "wait",
+				Usage: "Default wait duration between loops",
+				Value: 15 * time.Second,
+			},
 		},
 		Action: func(ctx context.Context, cmd *cli.Command) error {
 			parts := strings.SplitN(cmd.String("project"), "/", 2)
@@ -50,7 +55,7 @@ func main() {
 				return fmt.Errorf("--project must be in owner/repo format")
 			}
 			gh := pm.NewGitHub(os.Getenv("PAT"), parts[0], parts[1])
-			agent := gaia.NewAgent(gh, cmd.String("model"), cmd.Bool("god"))
+			agent := gaia.NewAgent(gh, cmd.String("model"), cmd.Bool("god"), cmd.Duration("wait"))
 
 			spec := tui.NewPipelineSpec("gaia", []tui.StepSpec{
 				{ID: "loop-start", JobName: "Loop start", Status: tui.StatusBlue},
