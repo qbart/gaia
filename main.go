@@ -6,7 +6,6 @@ import (
 	"os"
 	"time"
 
-	"github.com/qbart/gaia/config"
 	"github.com/qbart/gaia/gaia"
 	"github.com/qbart/gaia/pm"
 	"github.com/qbart/gaia/ui"
@@ -30,8 +29,6 @@ func main() {
 	gh := pm.NewGitHub(os.Getenv("PAT"), "qbart", "gaia")
 	agent := gaia.NewAgent(gh)
 
-	fmt.Println(config.Name)
-	fmt.Println("Hello, World!")
 	spec := tui.NewPipelineSpec("gaia", []tui.StepSpec{
 		{ID: "loop-start", JobName: "Loop start", Status: tui.StatusBlue},
 		{ID: "wait", JobName: "Wait for tasks", DependsOn: []tui.StepID{"loop-start"}},
