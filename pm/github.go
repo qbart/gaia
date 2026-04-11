@@ -23,12 +23,12 @@ func NewGitHub(token, owner, repo string) *GitHub {
 }
 
 var statusColors = map[Status]string{
-	StatusDocs:       "d876e3",
-	StatusBrainstorm: "d876e3",
-	StatusTodo:       "0d9488",
+	StatusDocs:       "700058",
+	StatusBrainstorm: "700058",
+	StatusTodo:       "0052cc",
 	StatusInProgress: "f9a825",
-	StatusInReview:   "b91c1c",
-	StatusRejected:   "0d9488",
+	StatusInReview:   "200000",
+	StatusRejected:   "0052cc",
 	StatusDone:       "0e8a16",
 }
 
