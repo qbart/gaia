@@ -16,9 +16,12 @@ export PAT=... # github token
 gaia --god --project qbart/gaia --model sonnet
 ```
 
-- `--god` - enters skip permission mode (default permissions are auto)
-- `--project` - source of github issues
+- `--god` - enters skip permission mode (default permissions are auto, usually you want sandboxed environment and god mode on)
+- `--provider` - "github" or "trello"
+- `--project` - source of tasks (trello "board id" or github "owner/repo")
 - `--model` - overwrite the default claude model (default opus)
+- `--wait` - wait time if no tasks (before next fetch, default 30s)
+- `--env-file` - path to envs (needed for providers, PAT for Github, or TRELLO_KEY/TRELLO_TOKEN)
 
 Following lables must exist in repo (they are created when gaia starts):
 - `docs` (instructions for AI)
@@ -32,6 +35,9 @@ Following lables must exist in repo (they are created when gaia starts):
 Tasks are implemented in the following order: `doing`, `rejected`, `todo`.
 
 When starting a task, all `docs` are concatenated into single prompt followed by task name and description.
+When rate limit is hit, wait step switches to 5 minute window.
 
 Happy burning tokens! :fire:
+
+:warning: API based usage is not recommended as it might generate huge cost!
 
