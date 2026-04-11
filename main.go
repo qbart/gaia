@@ -56,14 +56,16 @@ func main() {
 				{ID: "loop-start", JobName: "Loop start", Status: tui.StatusBlue},
 				{ID: "wait", JobName: "Wait for tasks", DependsOn: []tui.StepID{"loop-start"}},
 				{ID: "read-docs", JobName: "Read docs", DependsOn: []tui.StepID{"wait"}},
+				{ID: "read-brainstorm", JobName: "Get Brainstorm tasks", DependsOn: []tui.StepID{"wait"}},
 				{ID: "read-todo", JobName: "Get TODOs", DependsOn: []tui.StepID{"wait"}},
 				{ID: "read-doing", JobName: "Get In Progress tasks", DependsOn: []tui.StepID{"wait"}},
 				{ID: "read-rejected", JobName: "Get Rejected tasks", DependsOn: []tui.StepID{"wait"}},
-				{ID: "each-task", JobName: "For each task", DependsOn: []tui.StepID{"read-doing", "read-rejected", "read-todo", "read-docs"}, Status: tui.StatusBlue},
+				{ID: "each-task", JobName: "For each task", DependsOn: []tui.StepID{"read-doing", "read-rejected", "read-todo", "read-docs", "read-brainstorm"}, Status: tui.StatusBlue},
 				{ID: "do", JobName: "Build", DependsOn: []tui.StepID{"each-task"}},
+				{ID: "brainstorm", JobName: "Brainstorm", DependsOn: []tui.StepID{"each-task"}},
 				{ID: "report", JobName: "Report", DependsOn: []tui.StepID{"do"}},
 				{ID: "sync", JobName: "Sync", DependsOn: []tui.StepID{"report"}},
-				{ID: "loop-end", JobName: "Loop end", DependsOn: []tui.StepID{"sync"}, Status: tui.StatusBlue},
+				{ID: "loop-end", JobName: "Loop end", DependsOn: []tui.StepID{"sync", "brainstorm"}, Status: tui.StatusBlue},
 			})
 
 			pipelineModel := tui.NewPipelineModel(spec)

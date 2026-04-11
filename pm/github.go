@@ -64,6 +64,19 @@ func (g *GitHub) ListTasks(ctx context.Context, status Status) ([]*Task, error) 
 	return tasks, nil
 }
 
+func (g *GitHub) CreateTask(ctx context.Context, task Task) (TaskID, error) {
+	label := string(StatusTodo)
+	issue, _, err := g.client.Issues.Create(ctx, g.owner, g.repo, &github.IssueRequest{
+		Title:  &task.Name,
+		Body:   &task.Body,
+		Labels: &[]string{label},
+	})
+	if err != nil {
+		return "", err
+	}
+	return TaskID(fmt.Sprintf("%d", issue.GetNumber())), nil
+}
+
 func (g *GitHub) MoveTaskTo(ctx context.Context, id TaskID, status Status) error {
 	num, err := issueNumber(id)
 	if err != nil {

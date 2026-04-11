@@ -15,16 +15,18 @@ type Task struct {
 }
 
 const (
-	StatusDocs       Status = "docs"
-	StatusTodo       Status = "todo"
-	StatusInProgress Status = "doing"
-	StatusInReview   Status = "review"
-	StatusRejected   Status = "rejected"
-	StatusDone       Status = "done"
+	StatusDocs        Status = "docs"
+	StatusBrainstorm  Status = "brainstorm"
+	StatusTodo        Status = "todo"
+	StatusInProgress  Status = "doing"
+	StatusInReview    Status = "review"
+	StatusRejected    Status = "rejected"
+	StatusDone        Status = "done"
 )
 
 var Statuses = []Status{
 	StatusDocs,
+	StatusBrainstorm,
 	StatusTodo,
 	StatusInProgress,
 	StatusInReview,
@@ -34,6 +36,7 @@ var Statuses = []Status{
 
 type Provider interface {
 	ListTasks(ctx context.Context, status Status) ([]*Task, error)
+	CreateTask(ctx context.Context, task Task) (TaskID, error)
 	MoveTaskTo(ctx context.Context, id TaskID, status Status) error
 	CommentTask(ctx context.Context, id TaskID, body string) error
 }

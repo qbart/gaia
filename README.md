@@ -12,7 +12,7 @@ AI instructions and rules are fed from issues so everything can be controlled re
 ## Run
 
 ```
-export PAT=... # github token
+export PAT=... # github token 
 gaia --god --project qbart/gaia --model sonnet
 ```
 
@@ -27,6 +27,9 @@ Following lables must be created in repo:
 - review (claude finished and mark the issue for review by us, it will not be picked unless rejected)
 - rejected (review is rejected and claude will pick it up again and apply feedback from comments)
 - done (review is approved and we can close the task)
+- brainstorm (instructions for AI to come up with new tasks when nothing to work on, no brainstorm = no brainstorming)
+
+Tasks are implemented in the following order: `doing`, `rejected`, `todo`.
 
 When starting a task, all `docs` are concatenated into single prompt followed by task name and description.
 

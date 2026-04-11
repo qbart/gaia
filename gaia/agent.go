@@ -2,7 +2,9 @@ package gaia
 
 import (
 	"bufio"
+	"bytes"
 	"context"
+	"encoding/json"
 	"os"
 	"os/exec"
 	"strings"
@@ -26,36 +28,38 @@ type TaskCommand struct {
 type Dispatcher chan (Command)
 
 type Agent struct {
-	Errors        chan (error)
-	Dispatcher    chan (Command)
-	Tasks         chan (TaskCommand)
-	Output        chan string
-	Provider      pm.Provider
-	Model         string
-	GodMode       bool
-	TasksDocs     *Tasks
-	TasksTodo     *Tasks
-	TasksDoing    *Tasks
-	TasksRejected *Tasks
-	TasksReview   *Tasks
-	firstRun      bool
+	Errors           chan (error)
+	Dispatcher       chan (Command)
+	Tasks            chan (TaskCommand)
+	Output           chan string
+	Provider         pm.Provider
+	Model            string
+	GodMode          bool
+	TasksDocs        *Tasks
+	TasksBrainstorm  *Tasks
+	TasksTodo        *Tasks
+	TasksDoing       *Tasks
+	TasksRejected    *Tasks
+	TasksReview      *Tasks
+	firstRun         bool
 }
 
 func NewAgent(p pm.Provider, model string, god bool) *Agent {
 	return &Agent{
-		firstRun:      true,
-		Dispatcher:    make(Dispatcher),
-		Errors:        make(chan error),
-		Tasks:         make(chan TaskCommand),
-		Output:        make(chan string, 256),
-		Provider:      p,
-		Model:         model,
-		GodMode:       god,
-		TasksDocs:     NewTasks(),
-		TasksTodo:     NewTasks(),
-		TasksDoing:    NewTasks(),
-		TasksRejected: NewTasks(),
-		TasksReview:   NewTasks(),
+		firstRun:        true,
+		Dispatcher:      make(Dispatcher),
+		Errors:          make(chan error),
+		Tasks:           make(chan TaskCommand),
+		Output:          make(chan string, 256),
+		Provider:        p,
+		Model:           model,
+		GodMode:         god,
+		TasksDocs:       NewTasks(),
+		TasksBrainstorm: NewTasks(),
+		TasksTodo:       NewTasks(),
+		TasksDoing:      NewTasks(),
+		TasksRejected:   NewTasks(),
+		TasksReview:     NewTasks(),
 	}
 }
 
@@ -68,6 +72,8 @@ func (a *Agent) Run(ctx context.Context) {
 			a.Do(ctx)
 			a.Report(ctx)
 			a.Sync(ctx)
+		} else if a.TasksBrainstorm.Len() > 0 {
+			a.Brainstorm(ctx)
 		}
 	}
 }
@@ -90,11 +96,13 @@ func (a *Agent) Wait(ctx context.Context) {
 
 func (a *Agent) ReadTasks(ctx context.Context) {
 	a.TasksDocs.Reset()
+	a.TasksBrainstorm.Reset()
 	a.TasksTodo.Reset()
 	a.TasksDoing.Reset()
 	a.TasksRejected.Reset()
 
 	a.Dispatcher <- Command{Kind: "read-docs", Enable: true}
+	a.Dispatcher <- Command{Kind: "read-brainstorm", Enable: true}
 	a.Dispatcher <- Command{Kind: "read-todo", Enable: true}
 	a.Dispatcher <- Command{Kind: "read-doing", Enable: true}
 	a.Dispatcher <- Command{Kind: "read-rejected", Enable: true}
@@ -106,6 +114,14 @@ func (a *Agent) ReadTasks(ctx context.Context) {
 			return err
 		}
 		a.TasksDocs.Append(tasks...)
+		return nil
+	})
+	g.Go(func() error {
+		tasks, err := a.Provider.ListTasks(ctx, pm.StatusBrainstorm)
+		if err != nil {
+			return err
+		}
+		a.TasksBrainstorm.Append(tasks...)
 		return nil
 	})
 	g.Go(func() error {
@@ -138,11 +154,13 @@ func (a *Agent) ReadTasks(ctx context.Context) {
 	}
 
 	docs := a.TasksDocs.Len()
+	brainstorm := a.TasksBrainstorm.Len()
 	todo := a.TasksTodo.Len()
 	doing := a.TasksDoing.Len()
 	rejected := a.TasksRejected.Len()
 
 	a.Dispatcher <- Command{Kind: "read-docs", Enable: false, Tasks: docs}
+	a.Dispatcher <- Command{Kind: "read-brainstorm", Enable: false, Tasks: brainstorm}
 	a.Dispatcher <- Command{Kind: "read-todo", Enable: false, Tasks: todo}
 	a.Dispatcher <- Command{Kind: "read-doing", Enable: false, Tasks: doing}
 	a.Dispatcher <- Command{Kind: "read-rejected", Enable: false, Tasks: rejected}
@@ -301,6 +319,49 @@ func (a *Agent) Sync(ctx context.Context) {
 	if err := exec.CommandContext(ctx, "git", "push", "origin", "HEAD").Run(); err != nil {
 		a.Errors <- err
 		return
+	}
+}
+
+func (a *Agent) Brainstorm(ctx context.Context) {
+	a.Dispatcher <- Command{Kind: "brainstorm", Enable: true}
+	defer func() {
+		a.Dispatcher <- Command{Kind: "brainstorm", Enable: false}
+	}()
+
+	var sb strings.Builder
+	for _, task := range a.TasksBrainstorm.All() {
+		sb.WriteString(task.Name)
+		sb.WriteString("\n\n")
+		sb.WriteString(task.Body)
+		sb.WriteString("\n\n")
+	}
+	sb.WriteString("Based on the above context, generate new actionable development tasks. ")
+	sb.WriteString("Output a JSON array only, no explanation. Each element must have \"title\" and \"body\" string fields.")
+
+	args := []string{"-p", "--output-format", "text"}
+	if a.Model != "" {
+		args = append(args, "--model", a.Model)
+	}
+	cmd := exec.CommandContext(ctx, "claude", args...)
+	cmd.Stdin = strings.NewReader(sb.String())
+	out, err := cmd.Output()
+	if err != nil {
+		a.Errors <- err
+		return
+	}
+
+	var ideas []struct {
+		Title string `json:"title"`
+		Body  string `json:"body"`
+	}
+	if err := json.Unmarshal(bytes.TrimSpace(out), &ideas); err != nil {
+		a.Errors <- err
+		return
+	}
+	for _, idea := range ideas {
+		if _, err := a.Provider.CreateTask(ctx, pm.Task{Name: idea.Title, Body: idea.Body}); err != nil {
+			a.Errors <- err
+		}
 	}
 }
 
