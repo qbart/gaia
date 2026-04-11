@@ -335,10 +335,24 @@ func (a *Agent) Brainstorm(ctx context.Context) {
 		sb.WriteString(task.Body)
 		sb.WriteString("\n\n")
 	}
-	sb.WriteString("Based on the above context, generate new actionable development tasks. ")
-	sb.WriteString("Output a JSON array only, no explanation. Each element must have \"title\" and \"body\" string fields.")
+	sb.WriteString("Based on the above context, generate new actionable development tasks.\n\n")
+	sb.WriteString("When done, create the file .gaia/brainstorm.json with the following exact structure — no markdown, no code fences, no explanation, raw JSON only:\n")
+	sb.WriteString("[\n  {\"title\": \"<task title>\", \"body\": \"<task description>\"}\n]\n")
+	sb.WriteString("Each object must have exactly two string fields: \"title\" (short task name) and \"body\" (detailed description). Write nothing else to the file.")
 
-	args := []string{"-p", "--output-format", "text"}
+	args := []string{"-p",
+		"--output-format", "stream-json",
+		"--verbose",
+		"--allowedTools", "Bash(git diff *),Bash(git log *),Bash(git status *)",
+		"--permission-mode", "auto",
+	}
+	if a.GodMode {
+		args = []string{"-p",
+			"--output-format", "stream-json",
+			"--verbose",
+			"--dangerously-skip-permissions",
+		}
+	}
 	if a.Model != "" {
 		args = append(args, "--model", a.Model)
 	}
@@ -348,33 +362,35 @@ func (a *Agent) Brainstorm(ctx context.Context) {
 	if err != nil {
 		a.Errors <- err
 		return
-	}
-	if err = cmd.Start(); err != nil {
+	} else if err = cmd.Start(); err != nil {
 		a.Errors <- err
 		return
-	}
-
-	var buf bytes.Buffer
-	scanner := bufio.NewScanner(stdout)
-	for scanner.Scan() {
-		line := scanner.Text()
-		buf.WriteString(line)
-		buf.WriteByte('\n')
-		select {
-		case a.Output <- line:
-		default:
+	} else {
+		scanner := bufio.NewScanner(stdout)
+		scanner.Buffer(make([]byte, 1024*1024), 1024*1024)
+		for scanner.Scan() {
+			select {
+			case a.Output <- scanner.Text():
+			default:
+			}
+		}
+		if err := cmd.Wait(); err != nil {
+			a.Errors <- err
 		}
 	}
-	if err := cmd.Wait(); err != nil {
+
+	const brainstormFile = ".gaia/brainstorm.json"
+	data, err := os.ReadFile(brainstormFile)
+	if err != nil {
 		a.Errors <- err
 		return
 	}
-
+	defer os.Remove(brainstormFile)
 	var ideas []struct {
 		Title string `json:"title"`
 		Body  string `json:"body"`
 	}
-	if err := json.Unmarshal(bytes.TrimSpace(buf.Bytes()), &ideas); err != nil {
+	if err := json.Unmarshal(bytes.TrimSpace(data), &ideas); err != nil {
 		a.Errors <- err
 		return
 	}
