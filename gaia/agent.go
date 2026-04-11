@@ -329,6 +329,10 @@ func (a *Agent) Brainstorm(ctx context.Context) {
 	}()
 
 	var sb strings.Builder
+	for _, doc := range a.TasksDocs.All() {
+		sb.WriteString(doc.Body)
+		sb.WriteString("\n\n")
+	}
 	for _, task := range a.TasksBrainstorm.All() {
 		sb.WriteString(task.Name)
 		sb.WriteString("\n\n")
