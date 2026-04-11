@@ -447,7 +447,7 @@ func (a *Agent) detectRateLimit(line string) {
 	if err := json.Unmarshal([]byte(line), &ev); err != nil {
 		return
 	}
-	if ev.Type == "rate_limit_event" && ev.RateLimitInfo != nil {
+	if ev.Type == "rate_limit_event" && ev.RateLimitInfo != nil && ev.RateLimitInfo.Status != "allowed" {
 		a.RateLimit = true
 		a.Errors <- fmt.Errorf("rate limit hit, waiting 5m before next attempt")
 	}
