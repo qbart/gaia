@@ -90,7 +90,7 @@ func (a *Agent) Wait(ctx context.Context) {
 	}
 
 	a.Dispatcher <- Command{Kind: "wait", Enable: true}
-	time.Sleep(5 * time.Second)
+	time.Sleep(15 * time.Second)
 	a.Dispatcher <- Command{Kind: "wait", Enable: false}
 }
 
