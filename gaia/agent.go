@@ -344,8 +344,28 @@ func (a *Agent) Brainstorm(ctx context.Context) {
 	}
 	cmd := exec.CommandContext(ctx, "claude", args...)
 	cmd.Stdin = strings.NewReader(sb.String())
-	out, err := cmd.Output()
+	stdout, err := cmd.StdoutPipe()
 	if err != nil {
+		a.Errors <- err
+		return
+	}
+	if err = cmd.Start(); err != nil {
+		a.Errors <- err
+		return
+	}
+
+	var buf bytes.Buffer
+	scanner := bufio.NewScanner(stdout)
+	for scanner.Scan() {
+		line := scanner.Text()
+		buf.WriteString(line)
+		buf.WriteByte('\n')
+		select {
+		case a.Output <- line:
+		default:
+		}
+	}
+	if err := cmd.Wait(); err != nil {
 		a.Errors <- err
 		return
 	}
@@ -354,7 +374,7 @@ func (a *Agent) Brainstorm(ctx context.Context) {
 		Title string `json:"title"`
 		Body  string `json:"body"`
 	}
-	if err := json.Unmarshal(bytes.TrimSpace(out), &ideas); err != nil {
+	if err := json.Unmarshal(bytes.TrimSpace(buf.Bytes()), &ideas); err != nil {
 		a.Errors <- err
 		return
 	}
