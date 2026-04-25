@@ -46,9 +46,11 @@ type Agent struct {
 	firstRun        bool
 	RateLimit       bool
 	WaitDuration    time.Duration
+	HookTimeout     time.Duration
+	currentTask     *pm.Task
 }
 
-func NewAgent(p pm.Provider, model string, god bool, waitDuration time.Duration) *Agent {
+func NewAgent(p pm.Provider, model string, god bool, waitDuration time.Duration, hookTimeout time.Duration) *Agent {
 	return &Agent{
 		firstRun:        true,
 		Dispatcher:      make(Dispatcher),
@@ -59,6 +61,7 @@ func NewAgent(p pm.Provider, model string, god bool, waitDuration time.Duration)
 		Model:           model,
 		GodMode:         god,
 		WaitDuration:    waitDuration,
+		HookTimeout:     hookTimeout,
 		TasksDocs:       NewTasks(),
 		TasksBrainstorm: NewTasks(),
 		TasksTodo:       NewTasks(),
@@ -103,6 +106,7 @@ func (a *Agent) Wait(ctx context.Context) {
 
 	a.Dispatcher <- Command{Kind: "wait", Enable: true}
 	time.Sleep(wait)
+	a.RunHook(ctx, "wait")
 	a.Dispatcher <- Command{Kind: "wait", Enable: false}
 
 	a.RateLimit = false
@@ -178,6 +182,8 @@ func (a *Agent) ReadTasks(ctx context.Context) {
 	doing := a.TasksDoing.Len()
 	rejected := a.TasksRejected.Len()
 
+	a.RunHook(ctx, "read-tasks")
+
 	a.Dispatcher <- Command{Kind: "read-docs", Enable: false, Tasks: docs}
 	a.Dispatcher <- Command{Kind: "read-brainstorm", Enable: false, Tasks: brainstorm}
 	a.Dispatcher <- Command{Kind: "read-todo", Enable: false, Tasks: todo}
@@ -188,6 +194,8 @@ func (a *Agent) ReadTasks(ctx context.Context) {
 func (a *Agent) Do(ctx context.Context) {
 	a.Dispatcher <- Command{Kind: "do", Enable: true}
 	defer func() {
+		a.RunHook(ctx, "do")
+		a.currentTask = nil
 		a.Dispatcher <- Command{Kind: "do", Enable: false}
 	}()
 
@@ -199,6 +207,7 @@ func (a *Agent) Do(ctx context.Context) {
 		task = a.TasksTodo.First()
 	}
 	if task != nil {
+		a.currentTask = task
 		if err := a.Provider.MoveTaskTo(ctx, task.ID, pm.StatusInProgress); err != nil {
 			a.Errors <- err
 		}
@@ -284,6 +293,7 @@ func (a *Agent) Do(ctx context.Context) {
 func (a *Agent) Report(ctx context.Context) {
 	a.Dispatcher <- Command{Kind: "report", Enable: true}
 	defer func() {
+		a.RunHook(ctx, "report")
 		a.Dispatcher <- Command{Kind: "report", Enable: false}
 	}()
 
@@ -305,6 +315,7 @@ func (a *Agent) Report(ctx context.Context) {
 func (a *Agent) Sync(ctx context.Context) {
 	a.Dispatcher <- Command{Kind: "sync", Enable: true}
 	defer func() {
+		a.RunHook(ctx, "sync")
 		a.Dispatcher <- Command{Kind: "sync", Enable: false}
 	}()
 
@@ -323,7 +334,15 @@ func (a *Agent) Sync(ctx context.Context) {
 			}
 		}
 	}
-	os.RemoveAll(".gaia")
+	// Clean .gaia/ but preserve hooks/ directory
+	if entries, err := os.ReadDir(".gaia"); err == nil {
+		for _, e := range entries {
+			if e.Name() == "hooks" {
+				continue
+			}
+			os.RemoveAll(".gaia/" + e.Name())
+		}
+	}
 
 	commitMsg := "chore: automated changes"
 	commitCmd := exec.CommandContext(ctx, "claude", "-p", "--output-format", "text")
@@ -351,6 +370,7 @@ func (a *Agent) Sync(ctx context.Context) {
 func (a *Agent) Brainstorm(ctx context.Context) {
 	a.Dispatcher <- Command{Kind: "brainstorm", Enable: true}
 	defer func() {
+		a.RunHook(ctx, "brainstorm")
 		a.Dispatcher <- Command{Kind: "brainstorm", Enable: false}
 	}()
 
@@ -430,6 +450,53 @@ func (a *Agent) Brainstorm(ctx context.Context) {
 		if _, err := a.Provider.CreateTask(ctx, pm.Task{Name: idea.Title, Body: idea.Body}); err != nil {
 			a.Errors <- err
 		}
+	}
+}
+
+func (a *Agent) RunHook(ctx context.Context, stepID string) {
+	hookPath := ".gaia/hooks/after-" + stepID
+	info, err := os.Stat(hookPath)
+	if err != nil || info.IsDir() {
+		return
+	}
+	if info.Mode()&0111 == 0 {
+		a.Errors <- fmt.Errorf("hook %s is not executable", hookPath)
+		return
+	}
+
+	hookCtx, cancel := context.WithTimeout(ctx, a.HookTimeout)
+	defer cancel()
+
+	cmd := exec.CommandContext(hookCtx, "./"+hookPath)
+	cmd.Env = append(os.Environ(),
+		"GAIA_STEP="+stepID,
+	)
+	if a.currentTask != nil {
+		cmd.Env = append(cmd.Env,
+			"GAIA_TASK_ID="+string(a.currentTask.ID),
+		)
+	}
+
+	stdout, err := cmd.StdoutPipe()
+	if err != nil {
+		a.Errors <- fmt.Errorf("hook %s: %w", hookPath, err)
+		return
+	}
+	if err := cmd.Start(); err != nil {
+		a.Errors <- fmt.Errorf("hook %s: %w", hookPath, err)
+		return
+	}
+
+	scanner := bufio.NewScanner(stdout)
+	for scanner.Scan() {
+		select {
+		case a.Output <- scanner.Text():
+		default:
+		}
+	}
+
+	if err := cmd.Wait(); err != nil {
+		a.Errors <- fmt.Errorf("hook %s: %w", hookPath, err)
 	}
 }
 

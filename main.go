@@ -57,6 +57,11 @@ func main() {
 				Usage: "Default wait duration between loops",
 				Value: 30 * time.Second,
 			},
+			&cli.DurationFlag{
+				Name:  "hook-timeout",
+				Usage: "Maximum execution time for hooks",
+				Value: 10 * time.Minute,
+			},
 		},
 		Action: func(ctx context.Context, cmd *cli.Command) error {
 			if envFile := cmd.String("env-file"); envFile != "" {
@@ -84,7 +89,7 @@ func main() {
 			if err := provider.Init(ctx); err != nil {
 				return fmt.Errorf("initializing provider: %w", err)
 			}
-			agent := gaia.NewAgent(provider, cmd.String("model"), cmd.Bool("god"), cmd.Duration("wait"))
+			agent := gaia.NewAgent(provider, cmd.String("model"), cmd.Bool("god"), cmd.Duration("wait"), cmd.Duration("hook-timeout"))
 
 			spec := tui.NewPipelineSpec("gaia", []tui.StepSpec{
 				{ID: "loop-start", JobName: "Loop start", Status: tui.StatusBlue},
