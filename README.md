@@ -22,6 +22,7 @@ gaia --god --project qbart/gaia --model sonnet
 - `--model` - overwrite the default claude model (default opus)
 - `--wait` - wait time if no tasks (before next fetch, default 30s)
 - `--env-file` - path to envs (needed for providers, PAT for Github, or TRELLO_KEY/TRELLO_TOKEN)
+- `--hook-timeout` - max execution time for hooks (default 10m)
 
 Following lables must exist in repo (they are created when gaia starts):
 - `docs` (instructions for AI)
@@ -36,6 +37,31 @@ Tasks are implemented in the following order: `doing`, `rejected`, `todo`.
 
 When starting a task, all `docs` are concatenated into single prompt followed by task name and description.
 When rate limit is hit, wait step switches to 5 minute window.
+
+## Hooks
+
+Shell scripts in `.gaia/hooks/` run after each pipeline step. Scripts must be executable and follow the naming convention `after-<step>`:
+
+```
+.gaia/hooks/
+  after-wait
+  after-read-tasks
+  after-do
+  after-report
+  after-sync
+  after-brainstorm
+```
+
+Missing hooks are silently skipped. If a hook fails, the error is logged and the pipeline continues.
+
+Environment variables available in hooks:
+
+| Variable | Description |
+|---|---|
+| `GAIA_STEP` | Step ID (e.g. `do`, `sync`) |
+| `GAIA_TASK_ID` | Current task ID (only set when a task is active) |
+
+Hook timeout defaults to 10 minutes, configurable with `--hook-timeout`.
 
 Happy burning tokens! :fire:
 
