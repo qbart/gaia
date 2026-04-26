@@ -1,0 +1,26 @@
+package ui
+
+import "github.com/qbart/gaia/config"
+
+templ FieldCSRF(csrf string) {
+    <input type="hidden" name="_csrf" value={ csrf }/>
+}
+
+templ Layout(page LayoutPage, yield templ.Component) {
+    <!DOCTYPE html>
+    <html lang="en">
+        <head>
+            <meta charset="utf-8"/>
+            <meta http-equiv="X-UA-Compatible" content="IE=edge"/>
+            <meta name="viewport" content="width=device-width, initial-scale=1"/>
+            <title>{ config.Name }</title>
+            <link rel="stylesheet" href="/static/bootstrap-v3.4.1/bootstrap.min.css"/>
+        </head>
+        <body>
+            @yield
+            <script src="/static/bootstrap-v3.4.1/jquery.min.js"></script>
+            <script src="/static/bootstrap-v3.4.1/bootstrap.min.js"></script>
+        </body>
+    </html>
+}
+

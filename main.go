@@ -7,10 +7,12 @@ import (
 	"strings"
 	"time"
 
+	"github.com/SoftKiwiGames/zen/zen"
 	"github.com/joho/godotenv"
 	"github.com/qbart/gaia/gaia"
 	"github.com/qbart/gaia/pm"
 	"github.com/qbart/gaia/ui"
+	"github.com/qbart/gaia/web"
 	"github.com/qbart/tui/tui"
 	"github.com/urfave/cli/v3"
 
@@ -30,6 +32,26 @@ func main() {
 	app := &cli.Command{
 		Name:  "gaia",
 		Usage: "AI-powered task agent",
+		Commands: []*cli.Command{
+			{
+				Name:  "server",
+				Usage: "Run the web server",
+				Flags: []cli.Flag{
+					&cli.StringFlag{
+						Name:  "env-file",
+						Usage: "Path to .env file to load environment variables from",
+					},
+				},
+				Action: func(ctx context.Context, cmd *cli.Command) error {
+					envs := zen.LoadEnvs()
+					srv := &web.Server{
+						Envs: envs,
+					}
+					srv.Run(ctx)
+					return nil
+				},
+			},
+		},
 		Flags: []cli.Flag{
 			&cli.StringFlag{
 				Name:  "env-file",

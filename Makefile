@@ -2,6 +2,14 @@
 run:
 	go run main.go
 
+.PHONY: dev
+dev:
+	go tool air
+
+.PHONY: html
+html:
+	go tool templ generate
+
 .PHONY: build
 build:
 	mkdir -p build/
