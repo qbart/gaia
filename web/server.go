@@ -33,7 +33,7 @@ func (s *Server) Run(ctx context.Context) {
 	})
 	srv.Embeds("/static", embeds)
 	srv.Get("/", func(w http.ResponseWriter, r *http.Request) {
-		ui.Layout(ui.LayoutPage{}, nil).Render(r.Context(), w)
+		ui.Layout(ui.LayoutPage{}, ui.ProjectPage(ui.FakeProjectPage())).Render(r.Context(), w)
 	})
 
 	s.Envs["ADDR"] = ":4000"
