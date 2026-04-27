@@ -1,0 +1,42 @@
+package ui
+
+templ TaskNewPage(data TaskNewPageData) {
+    @ProjectPage(data.Board)
+    <div class="gaia-modal-backdrop">
+        <a href={ templ.SafeURL("/projects/" + string(data.Board.Active)) } class="gaia-modal-dismiss" aria-label="Close"></a>
+        <section class="gaia-modal" role="dialog" aria-modal="true" aria-labelledby="gaia-task-title">
+            <header class="gaia-modal-header">
+                <a href={ templ.SafeURL("/projects/" + string(data.Board.Active)) } class="gaia-modal-close" aria-label="Close">×</a>
+            </header>
+            <form method="post" action={ templ.SafeURL("/projects/" + string(data.Board.Active) + "/tasks") } class="gaia-modal-form">
+                <input type="hidden" name="status" value={ string(data.Status) }/>
+                if data.Error != "" {
+                    <div class="gaia-modal-error">{ data.Error }</div>
+                }
+                <label class="gaia-modal-label" for="gaia-task-title">Title</label>
+                <input
+                    id="gaia-task-title"
+                    class="gaia-modal-title-input"
+                    type="text"
+                    name="name"
+                    value={ data.Name }
+                    placeholder="Task title"
+                    autofocus
+                    required
+                />
+                <label class="gaia-modal-label" for="gaia-task-body">Description</label>
+                <textarea
+                    id="gaia-task-body"
+                    class="gaia-modal-body-input"
+                    name="body"
+                    placeholder="Add a more detailed description..."
+                    rows="8"
+                >{ data.Body }</textarea>
+                <div class="gaia-modal-actions">
+                    <a href={ templ.SafeURL("/projects/" + string(data.Board.Active)) } class="gaia-modal-cancel">Cancel</a>
+                    <button type="submit" class="gaia-modal-submit">Create task</button>
+                </div>
+            </form>
+        </section>
+    </div>
+}

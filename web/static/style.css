@@ -1,0 +1,418 @@
+html, body { height: 100%; margin: 0; }
+body { background-color: #0f5132; font-family: -apple-system, "Helvetica Neue", Arial, sans-serif; color: #172b4d; }
+
+.gaia-app { display: flex; height: 100vh; }
+
+.gaia-workspace {
+    width: 64px;
+    background-color: #1d1f21;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    padding: 12px 0;
+    gap: 8px;
+    box-shadow: 2px 0 4px rgba(0,0,0,0.3);
+}
+.gaia-workspace-brand {
+    width: 40px; height: 40px;
+    border-radius: 8px;
+    background-color: #5c6f9b;
+    color: #fff;
+    font-weight: bold;
+    display: flex; align-items: center; justify-content: center;
+    margin-bottom: 8px;
+    text-decoration: none;
+}
+.gaia-workspace-item, .gaia-workspace-add {
+    width: 40px; height: 40px;
+    border-radius: 50%;
+    background-color: #3a3d41;
+    color: #d1d2d3;
+    display: flex; align-items: center; justify-content: center;
+    font-weight: bold;
+    text-decoration: none;
+    transition: background-color 0.15s ease;
+}
+.gaia-workspace-item:hover, .gaia-workspace-add:hover {
+    background-color: #4f86c6;
+    color: #fff;
+    text-decoration: none;
+}
+.gaia-workspace-item-active {
+    background-color: #4f86c6;
+    color: #fff;
+}
+.gaia-workspace-add {
+    background-color: transparent;
+    border: 2px dashed #4a4d51;
+    color: #9aa0a6;
+}
+
+.gaia-board {
+    flex: 1;
+    display: flex;
+    flex-direction: column;
+    overflow: hidden;
+}
+.gaia-board-header {
+    padding: 12px 20px;
+    background-color: rgba(0,0,0,0.15);
+    color: #fff;
+}
+.gaia-board-title { margin: 0; font-size: 18px; font-weight: 600; }
+.gaia-board-columns {
+    flex: 1;
+    display: flex;
+    gap: 12px;
+    padding: 16px;
+    overflow-x: auto;
+    overflow-y: hidden;
+    align-items: flex-start;
+    cursor: grab;
+    user-select: none;
+}
+.gaia-board-grabbing { cursor: grabbing; }
+.gaia-board-columns > * { cursor: default; }
+.gaia-board-columns .gaia-card { cursor: pointer; }
+
+.gaia-column {
+    flex: 0 0 320px;
+    width: 320px;
+    max-width: 320px;
+    min-width: 0;
+    box-sizing: border-box;
+    background-color: #ebecf0;
+    border-radius: 6px;
+    padding: 8px;
+    display: flex;
+    flex-direction: column;
+    max-height: calc(100vh - 100px);
+    overflow: hidden;
+}
+.gaia-column-doing { background-color: #fff4d6; }
+.gaia-column-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    padding: 4px 8px 8px;
+    font-weight: 600;
+    font-size: 14px;
+    color: #172b4d;
+}
+.gaia-column-count {
+    background-color: #dfe1e6;
+    color: #5e6c84;
+    border-radius: 10px;
+    font-size: 12px;
+    padding: 1px 8px;
+    font-weight: 500;
+}
+.gaia-column-cards {
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+    overflow-y: auto;
+    padding: 2px;
+}
+
+.gaia-card {
+    background: #fff;
+    border-radius: 4px;
+    padding: 8px 10px;
+    box-shadow: 0 1px 0 rgba(9,30,66,0.25);
+    cursor: pointer;
+    display: block;
+    text-decoration: none;
+    color: inherit;
+    min-width: 0;
+    max-width: 100%;
+    box-sizing: border-box;
+    overflow: hidden;
+}
+.gaia-card:hover { background-color: #f4f5f7; text-decoration: none; color: inherit; }
+.gaia-card-readonly {
+    cursor: default;
+    background-color: rgba(255,255,255,0.6);
+    border-left: 3px solid #b58705;
+}
+.gaia-card-readonly:hover { background-color: rgba(255,255,255,0.6); }
+.gaia-card-title {
+    font-weight: 600;
+    font-size: 14px;
+    margin-bottom: 4px;
+    max-width: 100%;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+.gaia-card-body {
+    color: #5e6c84;
+    font-size: 12px;
+    margin-bottom: 6px;
+    max-width: 100%;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.gaia-add-card {
+    margin-top: 6px;
+    color: #5e6c84;
+    font-size: 13px;
+    padding: 6px 8px;
+    cursor: pointer;
+    border-radius: 4px;
+    display: block;
+    text-decoration: none;
+}
+.gaia-add-card:hover { background-color: #d3d6dd; color: #172b4d; text-decoration: none; }
+
+.gaia-board-form {
+    flex: 1;
+    display: flex;
+    justify-content: center;
+    align-items: flex-start;
+    padding: 32px;
+    background-color: rgba(255,255,255,0.04);
+}
+.gaia-form {
+    width: 100%;
+    max-width: 420px;
+    background-color: #fff;
+    border-radius: 6px;
+    padding: 20px;
+    box-shadow: 0 1px 3px rgba(9,30,66,0.2);
+    display: flex;
+    flex-direction: column;
+    gap: 12px;
+}
+.gaia-form-label {
+    font-size: 13px;
+    font-weight: 600;
+    color: #5e6c84;
+}
+.gaia-form-input {
+    padding: 8px 10px;
+    border: 1px solid #dfe1e6;
+    border-radius: 4px;
+    font-size: 14px;
+    outline: none;
+}
+.gaia-form-input:focus {
+    border-color: #4f86c6;
+    box-shadow: 0 0 0 2px rgba(79,134,198,0.2);
+}
+.gaia-form-actions {
+    display: flex;
+    justify-content: flex-end;
+    gap: 8px;
+    margin-top: 8px;
+}
+.gaia-form-cancel {
+    padding: 6px 12px;
+    color: #5e6c84;
+    text-decoration: none;
+    border-radius: 4px;
+}
+.gaia-form-cancel:hover { background-color: #f4f5f7; }
+.gaia-form-submit {
+    padding: 6px 14px;
+    background-color: #4f86c6;
+    color: #fff;
+    border: none;
+    border-radius: 4px;
+    font-weight: 600;
+    cursor: pointer;
+}
+.gaia-form-submit:hover { background-color: #3a6fa8; }
+.gaia-form-error {
+    background-color: #ffebe6;
+    color: #bf2600;
+    padding: 8px 10px;
+    border-radius: 4px;
+    font-size: 13px;
+}
+
+.gaia-modal-backdrop {
+    position: fixed;
+    inset: 0;
+    background-color: rgba(9, 30, 66, 0.55);
+    display: flex;
+    justify-content: center;
+    align-items: flex-start;
+    padding: 56px 16px;
+    overflow-y: auto;
+    z-index: 1000;
+}
+.gaia-modal-dismiss { position: absolute; inset: 0; cursor: default; }
+.gaia-modal {
+    position: relative;
+    width: 100%;
+    max-width: 760px;
+    background-color: #f4f5f7;
+    border-radius: 8px;
+    box-shadow: 0 12px 32px rgba(9, 30, 66, 0.4);
+    overflow: hidden;
+    z-index: 1;
+}
+.gaia-modal-wide { max-width: 1080px; }
+.gaia-modal-grid {
+    display: grid;
+    grid-template-columns: minmax(0, 1.5fr) minmax(0, 1fr);
+    gap: 0;
+}
+.gaia-modal-grid > .gaia-modal-form {
+    padding: 8px 24px 24px 24px;
+}
+.gaia-modal-grid > .gaia-comments {
+    border-top: none;
+    border-left: 1px solid #dfe1e6;
+    padding: 8px 24px 24px 24px;
+}
+@media (max-width: 800px) {
+    .gaia-modal-grid { grid-template-columns: 1fr; }
+    .gaia-modal-grid > .gaia-comments {
+        border-left: none;
+        border-top: 1px solid #dfe1e6;
+    }
+}
+.gaia-modal-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    padding: 18px 24px 4px 24px;
+    color: #5e6c84;
+    font-size: 13px;
+}
+.gaia-modal-eyebrow strong { color: #172b4d; }
+.gaia-modal-close {
+    color: #5e6c84;
+    font-size: 24px;
+    line-height: 1;
+    text-decoration: none;
+    padding: 4px 8px;
+    border-radius: 4px;
+}
+.gaia-modal-close:hover { background-color: rgba(9,30,66,0.08); color: #172b4d; }
+.gaia-modal-form {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+    padding: 8px 24px 24px 24px;
+}
+.gaia-modal-label {
+    font-size: 12px;
+    font-weight: 700;
+    text-transform: uppercase;
+    color: #5e6c84;
+    margin-top: 12px;
+}
+.gaia-modal-title-input {
+    font-size: 14px;
+    font-weight: 600;
+    border: 2px solid transparent;
+    background: #fff;
+    color: #172b4d;
+    border-radius: 6px;
+    padding: 8px 10px;
+    outline: none;
+}
+.gaia-modal-title-input:focus { border-color: #4f86c6; }
+.gaia-modal-body-input {
+    font-size: 14px;
+    border: 2px solid transparent;
+    background: #fff;
+    color: #172b4d;
+    border-radius: 6px;
+    padding: 10px 12px;
+    outline: none;
+    resize: vertical;
+    font-family: inherit;
+    line-height: 1.5;
+}
+.gaia-modal-body-input:focus { border-color: #4f86c6; }
+.gaia-modal-select {
+    font-size: 14px;
+    border: 2px solid transparent;
+    background: #fff;
+    color: #172b4d;
+    border-radius: 6px;
+    padding: 8px 10px;
+    outline: none;
+    font-family: inherit;
+}
+.gaia-modal-select:focus { border-color: #4f86c6; }
+.gaia-modal-actions {
+    display: flex;
+    justify-content: flex-end;
+    gap: 8px;
+    margin-top: 12px;
+}
+.gaia-modal-cancel {
+    padding: 8px 14px;
+    color: #5e6c84;
+    text-decoration: none;
+    border-radius: 4px;
+}
+.gaia-modal-cancel:hover { background-color: rgba(9,30,66,0.08); color: #172b4d; }
+.gaia-modal-submit {
+    padding: 8px 18px;
+    background-color: #4f86c6;
+    color: #fff;
+    border: none;
+    border-radius: 4px;
+    font-weight: 600;
+    cursor: pointer;
+    font-size: 14px;
+}
+.gaia-modal-submit:hover { background-color: #3a6fa8; }
+.gaia-modal-error {
+    background-color: #ffebe6;
+    color: #bf2600;
+    padding: 8px 12px;
+    border-radius: 4px;
+    font-size: 13px;
+}
+
+.gaia-comments {
+    background-color: #f4f5f7;
+    display: flex;
+    flex-direction: column;
+}
+.gaia-comments-title {
+    margin: 12px 0;
+    font-size: 12px;
+    font-weight: 700;
+    text-transform: uppercase;
+    color: #5e6c84;
+    letter-spacing: 0.5px;
+}
+.gaia-comments-empty {
+    margin: 0 0 12px 0;
+    color: #5e6c84;
+    font-size: 13px;
+    font-style: italic;
+}
+.gaia-comments-list {
+    list-style: none;
+    margin: 0 0 16px 0;
+    padding: 0;
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+}
+.gaia-comment {
+    background-color: #fff;
+    border-radius: 6px;
+    padding: 10px 12px;
+    font-size: 14px;
+    color: #172b4d;
+    box-shadow: 0 1px 0 rgba(9,30,66,0.08);
+    white-space: pre-wrap;
+    word-wrap: break-word;
+}
+.gaia-comments-form {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+}

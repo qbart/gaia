@@ -15,11 +15,13 @@ templ Layout(page LayoutPage, yield templ.Component) {
             <meta name="viewport" content="width=device-width, initial-scale=1"/>
             <title>{ config.Name }</title>
             <link rel="stylesheet" href="/static/bootstrap-v3.4.1/bootstrap.min.css"/>
+            <link rel="stylesheet" href="/static/style.css"/>
         </head>
         <body>
             @yield
             <script src="/static/bootstrap-v3.4.1/jquery.min.js"></script>
             <script src="/static/bootstrap-v3.4.1/bootstrap.min.js"></script>
+            <script src="/static/board.js"></script>
         </body>
     </html>
 }

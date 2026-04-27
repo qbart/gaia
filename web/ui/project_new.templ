@@ -1,0 +1,42 @@
+package ui
+
+import "github.com/qbart/gaia/config"
+
+templ ProjectNewPage(data ProjectNewPageData) {
+    <div class="gaia-app">
+        <aside class="gaia-workspace">
+            <a href="/" class="gaia-workspace-brand" title={ config.Name }>{ string(config.Name[0]) }</a>
+            for _, p := range data.Projects {
+                <a href={ templ.SafeURL("/projects/" + string(p.ID)) } class="gaia-workspace-item" title={ p.Name }>{ p.Icon }</a>
+            }
+            <a href="/projects/new" class="gaia-workspace-item gaia-workspace-item-active" title="Add project">+</a>
+        </aside>
+        <main class="gaia-board">
+            <header class="gaia-board-header">
+                <h2 class="gaia-board-title">New project</h2>
+            </header>
+            <div class="gaia-board-form">
+                <form method="post" action="/projects" class="gaia-form">
+                    if data.Error != "" {
+                        <div class="gaia-form-error">{ data.Error }</div>
+                    }
+                    <label class="gaia-form-label" for="project-name">Name</label>
+                    <input
+                        id="project-name"
+                        class="gaia-form-input"
+                        type="text"
+                        name="name"
+                        value={ data.Name }
+                        placeholder="My project"
+                        autofocus
+                        required
+                    />
+                    <div class="gaia-form-actions">
+                        <a href="/" class="gaia-form-cancel">Cancel</a>
+                        <button type="submit" class="gaia-form-submit">Create</button>
+                    </div>
+                </form>
+            </div>
+        </main>
+    </div>
+}

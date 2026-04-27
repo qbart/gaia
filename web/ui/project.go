@@ -3,22 +3,24 @@ package ui
 import "github.com/qbart/gaia/pm"
 
 type ProjectCard struct {
-	ID    pm.TaskID
-	Name  string
-	Body  string
-	Tags  []string
+	ID        pm.TaskID
+	ProjectID pm.ProjectID
+	Name      string
+	Body      string
+	ReadOnly  bool
 }
 
 type ProjectColumn struct {
-	Status pm.Status
-	Title  string
-	Cards  []ProjectCard
+	ProjectID pm.ProjectID
+	Status    pm.Status
+	Title     string
+	Cards     []ProjectCard
 }
 
 type Project struct {
-	ID    pm.ProjectID
-	Name  string
-	Icon  string
+	ID   pm.ProjectID
+	Name string
+	Icon string
 }
 
 type ProjectPageData struct {
@@ -27,74 +29,69 @@ type ProjectPageData struct {
 	Columns  []ProjectColumn
 }
 
-func FakeProjectPage() ProjectPageData {
-	projects := []Project{
-		{ID: "gaia", Name: "Gaia", Icon: "G"},
-		{ID: "zen", Name: "Zen", Icon: "Z"},
-		{ID: "kiwi", Name: "Kiwi", Icon: "K"},
-		{ID: "atlas", Name: "Atlas", Icon: "A"},
-	}
+var statusTitles = map[pm.Status]string{
+	pm.StatusDocs:       "Docs",
+	pm.StatusTodo:       "Todo",
+	pm.StatusInProgress: "In Progress",
+	pm.StatusInReview:   "In Review",
+	pm.StatusRejected:   "Rejected",
+	pm.StatusDone:       "Done",
+}
 
-	columns := []ProjectColumn{
-		{
-			Status: pm.StatusDocs,
-			Title:  "Docs",
-			Cards: []ProjectCard{
-				{ID: "d-1", Name: "Architecture overview", Body: "High level system diagram", Tags: []string{"docs"}},
-				{ID: "d-2", Name: "Onboarding guide", Body: "Steps for new contributors", Tags: []string{"docs", "intro"}},
-			},
-		},
-		{
-			Status: pm.StatusBrainstorm,
-			Title:  "Brainstorm",
-			Cards: []ProjectCard{
-				{ID: "b-1", Name: "Voice command mode", Body: "Investigate Whisper integration", Tags: []string{"idea"}},
-				{ID: "b-2", Name: "Telemetry dashboard", Body: "Cards / latency / errors", Tags: []string{"idea", "ops"}},
-			},
-		},
-		{
-			Status: pm.StatusTodo,
-			Title:  "Todo",
-			Cards: []ProjectCard{
-				{ID: "t-1", Name: "Implement /server command", Body: "CLI subcommand starting web/server.go", Tags: []string{"cli"}},
-				{ID: "t-2", Name: "Bootstrap layout", Body: "Switch to Bootstrap 3 base layout", Tags: []string{"ui"}},
-				{ID: "t-3", Name: "Project page", Body: "Trello-like board with workspace switcher", Tags: []string{"ui"}},
-			},
-		},
-		{
-			Status: pm.StatusInProgress,
-			Title:  "In Progress",
-			Cards: []ProjectCard{
-				{ID: "p-1", Name: "Postgres wiring", Body: "Connect via zen/pg", Tags: []string{"db"}},
-			},
-		},
-		{
-			Status: pm.StatusInReview,
-			Title:  "In Review",
-			Cards: []ProjectCard{
-				{ID: "r-1", Name: "Trello rate limit fix", Body: "Backoff on 429", Tags: []string{"bugfix"}},
-			},
-		},
-		{
-			Status: pm.StatusRejected,
-			Title:  "Rejected",
-			Cards: []ProjectCard{
-				{ID: "x-1", Name: "Rewrite in Rust", Body: "Out of scope", Tags: []string{"meta"}},
-			},
-		},
-		{
-			Status: pm.StatusDone,
-			Title:  "Done",
-			Cards: []ProjectCard{
-				{ID: "y-1", Name: "Initial Gaia agent loop", Body: "Pipeline TUI shipped", Tags: []string{"core"}},
-				{ID: "y-2", Name: "GitHub provider", Body: "Tasks read/write via GH API", Tags: []string{"providers"}},
-			},
-		},
-	}
+var boardStatuses = []pm.Status{
+	pm.StatusDocs,
+	pm.StatusTodo,
+	pm.StatusInProgress,
+	pm.StatusInReview,
+	pm.StatusRejected,
+	pm.StatusDone,
+}
 
-	return ProjectPageData{
-		Projects: projects,
-		Active:   "gaia",
-		Columns:  columns,
+func IsReadOnlyStatus(s pm.Status) bool {
+	return s == pm.StatusInProgress
+}
+
+func columnStatusClass(s pm.Status) string {
+	if s == pm.StatusInProgress {
+		return "gaia-column-doing"
 	}
+	return ""
+}
+
+func allowsAddCard(s pm.Status) bool {
+	return s != pm.StatusInProgress && s != pm.StatusInReview && s != pm.StatusRejected
+}
+
+func StatusTitle(s pm.Status) string {
+	if t, ok := statusTitles[s]; ok {
+		return t
+	}
+	return string(s)
+}
+
+func BuildColumns(projectID pm.ProjectID, tasks []pm.Task) []ProjectColumn {
+	bucket := make(map[pm.Status][]ProjectCard, len(boardStatuses))
+	for _, t := range tasks {
+		status := t.Status
+		if status == pm.StatusBrainstorm {
+			status = pm.StatusDocs
+		}
+		bucket[status] = append(bucket[status], ProjectCard{
+			ID:        t.ID,
+			ProjectID: t.ProjectID,
+			Name:      t.Name,
+			Body:      t.Body,
+			ReadOnly:  IsReadOnlyStatus(status),
+		})
+	}
+	cols := make([]ProjectColumn, 0, len(boardStatuses))
+	for _, s := range boardStatuses {
+		cols = append(cols, ProjectColumn{
+			ProjectID: projectID,
+			Status:    s,
+			Title:     StatusTitle(s),
+			Cards:     bucket[s],
+		})
+	}
+	return cols
 }

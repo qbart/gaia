@@ -7,11 +7,13 @@ type ProjectID string
 type Status string
 
 type Task struct {
-	ID       TaskID
-	Name     string
-	Body     string
-	Status   Status
-	Comments []string
+	ID        TaskID
+	ProjectID ProjectID
+	Name      string
+	Body      string
+	Status    Status
+	Tags      []string
+	Comments  []string
 }
 
 const (
