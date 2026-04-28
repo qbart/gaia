@@ -40,11 +40,22 @@ templ projectColumn(col ProjectColumn) {
                 <span class="gaia-column-count">{ countLabel(len(col.Cards)) }</span>
             }
         </div>
-        <div class="gaia-column-cards">
-            for _, card := range col.Cards {
-                @projectCard(card)
-            }
-        </div>
+        if IsReorderableStatus(col.Status) {
+            <div class="gaia-column-cards"
+                data-project-id={ string(col.ProjectID) }
+                data-status={ string(col.Status) }
+                data-sortable="true">
+                for _, card := range col.Cards {
+                    @projectCard(card)
+                }
+            </div>
+        } else {
+            <div class="gaia-column-cards">
+                for _, card := range col.Cards {
+                    @projectCard(card)
+                }
+            </div>
+        }
         if col.ProjectID != "" && allowsAddCard(col.Status) {
             <a href={ templ.SafeURL("/projects/" + string(col.ProjectID) + "/tasks/new?status=" + string(col.Status)) } class="gaia-add-card">+ Add a card</a>
         }
@@ -53,14 +64,15 @@ templ projectColumn(col ProjectColumn) {
 
 templ projectCard(card ProjectCard) {
     if card.ReadOnly {
-        <div class="gaia-card gaia-card-readonly" title="Controlled by AI">
+        <div class="gaia-card gaia-card-readonly" title="Controlled by AI" data-task-id={ string(card.ID) }>
             <div class="gaia-card-title">{ card.Name }</div>
             if card.Body != "" {
                 <div class="gaia-card-body">{ card.Body }</div>
             }
         </div>
     } else {
-        <a href={ templ.SafeURL("/projects/" + string(card.ProjectID) + "/tasks/" + string(card.ID) + "/edit") } class="gaia-card">
+        <a href={ templ.SafeURL("/projects/" + string(card.ProjectID) + "/tasks/" + string(card.ID) + "/edit") }
+            class="gaia-card" data-task-id={ string(card.ID) } draggable="true">
             <div class="gaia-card-title">{ card.Name }</div>
             if card.Body != "" {
                 <div class="gaia-card-body">{ card.Body }</div>

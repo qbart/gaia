@@ -416,3 +416,206 @@ body { background-color: #0f5132; font-family: -apple-system, "Helvetica Neue", 
     flex-direction: column;
     gap: 8px;
 }
+
+/* Drag-and-drop sortable cards */
+.gaia-column-cards[data-sortable="true"] .gaia-card {
+    cursor: grab;
+}
+.gaia-column-cards[data-sortable="true"] .gaia-card:active {
+    cursor: grabbing;
+}
+.gaia-card-dragging {
+    opacity: 0.4;
+}
+
+/* Review/Rejected modal layout */
+.gaia-modal-grid-review .gaia-comments-large {
+    min-height: 360px;
+}
+.gaia-comments-large .gaia-comments-list {
+    max-height: 320px;
+    overflow-y: auto;
+}
+.gaia-modal-hint {
+    color: #666;
+    font-size: 13px;
+    margin: 8px 0;
+}
+.gaia-modal-inline-form {
+    display: inline-block;
+    margin: 0;
+}
+.gaia-modal-delete {
+    background-color: #d9534f;
+    color: #fff;
+    border: 1px solid #d43f3a;
+    padding: 6px 14px;
+    border-radius: 3px;
+    cursor: pointer;
+}
+.gaia-modal-delete:hover {
+    background-color: #c9302c;
+}
+.gaia-modal-reject {
+    background-color: #f0ad4e;
+    color: #fff;
+    border: 1px solid #eea236;
+    padding: 6px 14px;
+    border-radius: 3px;
+    cursor: pointer;
+}
+.gaia-modal-reject:hover {
+    background-color: #ec971f;
+}
+
+/* Full-page task view (replaces former modal). */
+.gaia-task-page {
+    box-sizing: border-box;
+    min-height: 100vh;
+    padding: 24px 32px;
+    background-color: #f4f5f7;
+    display: flex;
+    flex-direction: column;
+}
+.gaia-task-header {
+    display: flex;
+    align-items: center;
+    gap: 16px;
+    margin-bottom: 24px;
+}
+.gaia-task-back {
+    color: #1f3a5f;
+    text-decoration: none;
+    font-weight: 600;
+    font-size: 15px;
+}
+.gaia-task-back:hover { text-decoration: underline; }
+.gaia-task-spacer { flex: 1; }
+.gaia-task-status {
+    padding: 4px 12px;
+    border-radius: 12px;
+    font-size: 12px;
+    font-weight: 600;
+    background-color: #dfe1e6;
+    color: #172b4d;
+    text-transform: capitalize;
+}
+.gaia-task-status-doing { background-color: #f9a825; color: #fff; }
+.gaia-task-status-review { background-color: #1976d2; color: #fff; }
+.gaia-task-status-rejected { background-color: #d9534f; color: #fff; }
+.gaia-task-status-done { background-color: #0e8a16; color: #fff; }
+
+.gaia-task-grid {
+    flex: 1;
+    display: grid;
+    grid-template-columns: minmax(0, 2fr) minmax(280px, 1fr);
+    gap: 24px;
+    align-items: start;
+}
+.gaia-task-grid-new { grid-template-columns: minmax(0, 1fr); max-width: 900px; margin: 0 auto; width: 100%; }
+.gaia-task-grid-review .gaia-task-side-emphasis { min-height: 480px; }
+@media (max-width: 900px) {
+    .gaia-task-grid { grid-template-columns: 1fr; }
+}
+
+.gaia-task-main, .gaia-task-side {
+    background-color: #fff;
+    border-radius: 6px;
+    box-shadow: 0 1px 2px rgba(9, 30, 66, 0.08);
+    padding: 20px 24px;
+    display: flex;
+    flex-direction: column;
+    gap: 12px;
+}
+.gaia-task-form { display: flex; flex-direction: column; gap: 12px; margin: 0; }
+.gaia-task-label {
+    font-size: 12px;
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+    color: #6b778c;
+    margin: 0;
+}
+.gaia-task-title-input {
+    font-size: 22px;
+    font-weight: 600;
+    padding: 8px 10px;
+    border: 1px solid #dfe1e6;
+    border-radius: 4px;
+    width: 100%;
+    box-sizing: border-box;
+}
+.gaia-task-title-input:focus { outline: none; border-color: #4c9aff; }
+.gaia-task-title-input:disabled { background-color: #f4f5f7; color: #172b4d; }
+.gaia-task-body-input {
+    font-family: inherit;
+    font-size: 14px;
+    padding: 10px 12px;
+    border: 1px solid #dfe1e6;
+    border-radius: 4px;
+    width: 100%;
+    box-sizing: border-box;
+    min-height: 320px;
+    resize: vertical;
+}
+.gaia-task-body-input:focus { outline: none; border-color: #4c9aff; }
+.gaia-task-body-input:disabled { background-color: #f4f5f7; color: #172b4d; }
+
+.gaia-task-actions {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    margin-top: 8px;
+}
+.gaia-task-actions-spacer { flex: 1; }
+.gaia-task-inline-form { display: inline-block; margin: 0; }
+.gaia-task-cancel {
+    color: #42526e;
+    text-decoration: none;
+    padding: 6px 12px;
+}
+.gaia-task-cancel:hover { text-decoration: underline; }
+.gaia-task-submit {
+    background-color: #0052cc;
+    color: #fff;
+    border: 1px solid #0747a6;
+    padding: 7px 16px;
+    border-radius: 3px;
+    cursor: pointer;
+    font-weight: 600;
+}
+.gaia-task-submit:hover { background-color: #0747a6; }
+.gaia-task-delete {
+    background-color: #d9534f;
+    color: #fff;
+    border: 1px solid #d43f3a;
+    padding: 7px 16px;
+    border-radius: 3px;
+    cursor: pointer;
+}
+.gaia-task-delete:hover { background-color: #c9302c; }
+.gaia-task-reject {
+    background-color: #f0ad4e;
+    color: #fff;
+    border: 1px solid #eea236;
+    padding: 7px 16px;
+    border-radius: 3px;
+    cursor: pointer;
+}
+.gaia-task-reject:hover { background-color: #ec971f; }
+.gaia-task-error {
+    background-color: #ffebe6;
+    border: 1px solid #ff8f73;
+    color: #bf2600;
+    padding: 8px 12px;
+    border-radius: 3px;
+    font-size: 13px;
+}
+.gaia-task-hint {
+    background-color: #fffae6;
+    border-left: 3px solid #ffab00;
+    color: #5d4037;
+    padding: 10px 14px;
+    margin: 4px 0;
+    font-size: 13px;
+    border-radius: 0 3px 3px 0;
+}

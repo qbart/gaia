@@ -3,7 +3,8 @@ package ui
 import "github.com/qbart/gaia/pm"
 
 type TaskEditPageData struct {
-	Board        ProjectPageData
+	ProjectID    pm.ProjectID
+	ProjectName  string
 	TaskID       pm.TaskID
 	Status       pm.Status
 	Name         string

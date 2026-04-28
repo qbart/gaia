@@ -47,8 +47,41 @@ var boardStatuses = []pm.Status{
 	pm.StatusDone,
 }
 
+// IsReadOnlyStatus reports whether the AI agent owns this column. Cards in
+// these columns are not user-editable from the UI.
 func IsReadOnlyStatus(s pm.Status) bool {
 	return s == pm.StatusInProgress
+}
+
+// IsReorderableStatus reports whether users can drag-reorder cards within
+// the column. The doing column is owned by the agent and not user-orderable.
+func IsReorderableStatus(s pm.Status) bool {
+	return s != pm.StatusInProgress
+}
+
+// CanDeleteStatus reports whether a user can delete a card in this status.
+func CanDeleteStatus(s pm.Status) bool {
+	return s != pm.StatusInProgress
+}
+
+// TaskEditMode picks which UI form to render on the task edit page.
+type TaskEditMode string
+
+const (
+	TaskEditModeForm     TaskEditMode = "form"
+	TaskEditModeReview   TaskEditMode = "review"
+	TaskEditModeRejected TaskEditMode = "rejected"
+)
+
+func ModeFor(s pm.Status) TaskEditMode {
+	switch s {
+	case pm.StatusInReview:
+		return TaskEditModeReview
+	case pm.StatusRejected:
+		return TaskEditModeRejected
+	default:
+		return TaskEditModeForm
+	}
 }
 
 func columnStatusClass(s pm.Status) string {

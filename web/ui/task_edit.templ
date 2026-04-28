@@ -1,71 +1,160 @@
 package ui
 
+import "github.com/qbart/gaia/pm"
+
 templ TaskEditPage(data TaskEditPageData) {
-    @ProjectPage(data.Board)
-    <div class="gaia-modal-backdrop">
-        <a href={ templ.SafeURL("/projects/" + string(data.Board.Active)) } class="gaia-modal-dismiss" aria-label="Close"></a>
-        <section class="gaia-modal gaia-modal-wide" role="dialog" aria-modal="true" aria-labelledby="gaia-task-title">
-            <header class="gaia-modal-header">
-                <a href={ templ.SafeURL("/projects/" + string(data.Board.Active)) } class="gaia-modal-close" aria-label="Close">×</a>
-            </header>
-            <div class="gaia-modal-grid">
-                <form method="post" action={ templ.SafeURL("/projects/" + string(data.Board.Active) + "/tasks/" + string(data.TaskID)) } class="gaia-modal-form">
-                    if data.Error != "" {
-                        <div class="gaia-modal-error">{ data.Error }</div>
+    <div class="gaia-task-page">
+        @taskHeader(data.ProjectID, data.ProjectName, data.Status)
+        switch ModeFor(data.Status) {
+            case TaskEditModeReview:
+                @taskReviewView(data)
+            case TaskEditModeRejected:
+                @taskRejectedView(data)
+            default:
+                @taskEditForm(data)
+        }
+    </div>
+}
+
+templ taskHeader(projectID pm.ProjectID, projectName string, status pm.Status) {
+    <header class="gaia-task-header">
+        <a class="gaia-task-back" href={ templ.SafeURL("/projects/" + string(projectID)) } aria-label="Back to board">
+            <span aria-hidden="true">←</span> { projectName }
+        </a>
+        <span class="gaia-task-spacer"></span>
+        <span class={ "gaia-task-status", "gaia-task-status-" + string(status) }>{ StatusTitle(status) }</span>
+    </header>
+}
+
+templ taskEditForm(data TaskEditPageData) {
+    <div class="gaia-task-grid">
+        <section class="gaia-task-main">
+            <form method="post" action={ templ.SafeURL("/projects/" + string(data.ProjectID) + "/tasks/" + string(data.TaskID)) } class="gaia-task-form">
+                if data.Error != "" {
+                    <div class="gaia-task-error">{ data.Error }</div>
+                }
+                <label class="gaia-task-label" for="gaia-task-title">Title</label>
+                <input
+                    id="gaia-task-title"
+                    class="gaia-task-title-input"
+                    type="text"
+                    name="name"
+                    value={ data.Name }
+                    placeholder="Task title"
+                    autofocus
+                    required
+                />
+                <input type="hidden" name="status" value={ string(data.Status) }/>
+                <label class="gaia-task-label" for="gaia-task-body">Description</label>
+                <textarea
+                    id="gaia-task-body"
+                    class="gaia-task-body-input"
+                    name="body"
+                    placeholder="Add a more detailed description..."
+                >{ data.Body }</textarea>
+                <div class="gaia-task-actions">
+                    <a href={ templ.SafeURL("/projects/" + string(data.ProjectID)) } class="gaia-task-cancel">Cancel</a>
+                    <span class="gaia-task-actions-spacer"></span>
+                    if CanDeleteStatus(data.Status) {
+                        <button type="submit" class="gaia-task-delete" form="gaia-task-delete-form">Delete</button>
                     }
-                    <label class="gaia-modal-label" for="gaia-task-title">Title</label>
-                    <input
-                        id="gaia-task-title"
-                        class="gaia-modal-title-input"
-                        type="text"
-                        name="name"
-                        value={ data.Name }
-                        placeholder="Task title"
-                        autofocus
-                        required
-                    />
-                    <input type="hidden" name="status" value={ string(data.Status) }/>
-                    <label class="gaia-modal-label" for="gaia-task-body">Description</label>
-                    <textarea
-                        id="gaia-task-body"
-                        class="gaia-modal-body-input"
-                        name="body"
-                        placeholder="Add a more detailed description..."
-                        rows="10"
-                    >{ data.Body }</textarea>
-                    <div class="gaia-modal-actions">
-                        <a href={ templ.SafeURL("/projects/" + string(data.Board.Active)) } class="gaia-modal-cancel">Cancel</a>
-                        <button type="submit" class="gaia-modal-submit">Save changes</button>
-                    </div>
+                    <button type="submit" class="gaia-task-submit">Save changes</button>
+                </div>
+            </form>
+            if CanDeleteStatus(data.Status) {
+                <form id="gaia-task-delete-form" method="post"
+                    action={ templ.SafeURL("/projects/" + string(data.ProjectID) + "/tasks/" + string(data.TaskID) + "/delete") }
+                    onsubmit="return confirm('Delete this task?');"></form>
+            }
+        </section>
+        <aside class="gaia-task-side">
+            @taskCommentsBlock(data)
+        </aside>
+    </div>
+}
+
+templ taskReviewView(data TaskEditPageData) {
+    <div class="gaia-task-grid gaia-task-grid-review">
+        <section class="gaia-task-main">
+            <label class="gaia-task-label">Title</label>
+            <input class="gaia-task-title-input" type="text" value={ data.Name } disabled/>
+            <label class="gaia-task-label">Description</label>
+            <textarea class="gaia-task-body-input" disabled>{ data.Body }</textarea>
+            <div class="gaia-task-actions">
+                <a href={ templ.SafeURL("/projects/" + string(data.ProjectID)) } class="gaia-task-cancel">Close</a>
+                <span class="gaia-task-actions-spacer"></span>
+                <form method="post" action={ templ.SafeURL("/projects/" + string(data.ProjectID) + "/tasks/" + string(data.TaskID) + "/move") } class="gaia-task-inline-form">
+                    <input type="hidden" name="status" value="rejected"/>
+                    <button type="submit" class="gaia-task-reject">Reject</button>
                 </form>
-                <aside class="gaia-comments">
-                    <h3 class="gaia-comments-title">Comments</h3>
-                    if len(data.Comments) == 0 {
-                        <p class="gaia-comments-empty">No comments yet.</p>
-                    } else {
-                        <ul class="gaia-comments-list">
-                            for _, c := range data.Comments {
-                                <li class="gaia-comment">{ c }</li>
-                            }
-                        </ul>
-                    }
-                    <form method="post" action={ templ.SafeURL("/projects/" + string(data.Board.Active) + "/tasks/" + string(data.TaskID) + "/comments") } class="gaia-comments-form">
-                        if data.CommentError != "" {
-                            <div class="gaia-modal-error">{ data.CommentError }</div>
-                        }
-                        <textarea
-                            class="gaia-modal-body-input"
-                            name="body"
-                            placeholder="Write a comment..."
-                            rows="3"
-                            required
-                        >{ data.CommentDraft }</textarea>
-                        <div class="gaia-modal-actions">
-                            <button type="submit" class="gaia-modal-submit">Add comment</button>
-                        </div>
-                    </form>
-                </aside>
+                <form method="post" action={ templ.SafeURL("/projects/" + string(data.ProjectID) + "/tasks/" + string(data.TaskID) + "/move") } class="gaia-task-inline-form">
+                    <input type="hidden" name="status" value="done"/>
+                    <button type="submit" class="gaia-task-submit">Accept</button>
+                </form>
             </div>
         </section>
+        <aside class="gaia-task-side gaia-task-side-emphasis">
+            @taskCommentsBlock(data)
+        </aside>
     </div>
+}
+
+templ taskRejectedView(data TaskEditPageData) {
+    <div class="gaia-task-grid gaia-task-grid-review">
+        <section class="gaia-task-main">
+            <label class="gaia-task-label">Title</label>
+            <input class="gaia-task-title-input" type="text" value={ data.Name } disabled/>
+            <label class="gaia-task-label">Description</label>
+            <textarea class="gaia-task-body-input" disabled>{ data.Body }</textarea>
+            <p class="gaia-task-hint">This task was rejected and will be picked up again by the agent. You can still accept it manually until that happens.</p>
+            <div class="gaia-task-actions">
+                <a href={ templ.SafeURL("/projects/" + string(data.ProjectID)) } class="gaia-task-cancel">Close</a>
+                <span class="gaia-task-actions-spacer"></span>
+                if CanDeleteStatus(data.Status) {
+                    <form method="post"
+                        action={ templ.SafeURL("/projects/" + string(data.ProjectID) + "/tasks/" + string(data.TaskID) + "/delete") }
+                        class="gaia-task-inline-form"
+                        onsubmit="return confirm('Delete this task?');">
+                        <button type="submit" class="gaia-task-delete">Delete</button>
+                    </form>
+                }
+                <form method="post" action={ templ.SafeURL("/projects/" + string(data.ProjectID) + "/tasks/" + string(data.TaskID) + "/move") } class="gaia-task-inline-form">
+                    <input type="hidden" name="status" value="done"/>
+                    <button type="submit" class="gaia-task-submit">Accept anyway</button>
+                </form>
+            </div>
+        </section>
+        <aside class="gaia-task-side gaia-task-side-emphasis">
+            @taskCommentsBlock(data)
+        </aside>
+    </div>
+}
+
+templ taskCommentsBlock(data TaskEditPageData) {
+    <h3 class="gaia-comments-title">Comments</h3>
+    if len(data.Comments) == 0 {
+        <p class="gaia-comments-empty">No comments yet.</p>
+    } else {
+        <ul class="gaia-comments-list">
+            for _, c := range data.Comments {
+                <li class="gaia-comment">{ c }</li>
+            }
+        </ul>
+    }
+    <form method="post" action={ templ.SafeURL("/projects/" + string(data.ProjectID) + "/tasks/" + string(data.TaskID) + "/comments") } class="gaia-comments-form">
+        if data.CommentError != "" {
+            <div class="gaia-task-error">{ data.CommentError }</div>
+        }
+        <textarea
+            class="gaia-task-body-input"
+            name="body"
+            placeholder="Write a comment..."
+            rows="4"
+            required
+        >{ data.CommentDraft }</textarea>
+        <div class="gaia-task-actions">
+            <span class="gaia-task-actions-spacer"></span>
+            <button type="submit" class="gaia-task-submit">Add comment</button>
+        </div>
+    </form>
 }
