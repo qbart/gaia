@@ -50,7 +50,30 @@ func (s *Server) Run(ctx context.Context) {
 		SSL:          config.SSL,
 	})
 	srv.Embeds("/static", embeds)
+
+	// API group: token-protected, machine-readable. Mounted only when
+	// GAIA_TOKEN is set so a misconfigured server doesn't expose an
+	// open API by accident.
+	if token := strings.TrimSpace(os.Getenv("GAIA_TOKEN")); token != "" {
+		srv.Group("/api/projects/{projectID}", func(r *zen.Router) {
+			r.Use(MiddlewareBearerToken(token))
+			r.APIResource("/tasks", &taskAPIResource{store: s.Store})
+			r.Post("/tasks/{taskID}/move", apiMoveTask(s.Store))
+			r.Post("/tasks/{taskID}/comments", apiCommentTask(s.Store))
+		})
+	} else {
+		slog.Warn("GAIA_TOKEN not set — /api endpoints disabled")
+	}
+
+	// Optional HTTP basic auth on the UI group. Only enabled when both
+	// AUTH_USER and AUTH_PASS are set; otherwise the UI is open (handy
+	// when running locally on a single-user machine).
+	authUser := strings.TrimSpace(os.Getenv("AUTH_USER"))
+	authPass := os.Getenv("AUTH_PASS")
 	srv.Group("/", func(r *zen.Router) {
+		if authUser != "" && authPass != "" {
+			r.Use(zen.MiddlewareBasicAuth(authUser, authPass, "Gaia"))
+		}
 		r.Get("/", func(w http.ResponseWriter, r *http.Request) {
 			projects, err := s.Store.ListProjects()
 			if err != nil {

@@ -59,12 +59,12 @@ func main() {
 			},
 			&cli.StringFlag{
 				Name:  "provider",
-				Usage: "Task provider: github or trello",
-				Value: "github",
+				Usage: "Task provider: gaia, github or trello",
+				Value: "gaia",
 			},
 			&cli.StringFlag{
 				Name:  "project",
-				Usage: "GitHub: owner/repo. Trello: board ID",
+				Usage: "Gaia: project slug. GitHub: owner/repo. Trello: board ID",
 			},
 			&cli.StringFlag{
 				Name:  "model",
@@ -93,6 +93,20 @@ func main() {
 			}
 			var provider pm.Provider
 			switch cmd.String("provider") {
+			case "gaia":
+				project := cmd.String("project")
+				if project == "" {
+					return fmt.Errorf("--project must be set to a gaia project slug")
+				}
+				baseURL := strings.TrimSpace(os.Getenv("GAIA_URL"))
+				if baseURL == "" {
+					baseURL = "http://localhost:4000"
+				}
+				token := os.Getenv("GAIA_TOKEN")
+				if token == "" {
+					return fmt.Errorf("GAIA_TOKEN must be set for gaia provider")
+				}
+				provider = pm.NewGaia(baseURL, token, project)
 			case "github":
 				parts := strings.SplitN(cmd.String("project"), "/", 2)
 				if len(parts) != 2 {
@@ -106,7 +120,7 @@ func main() {
 				}
 				provider = pm.NewTrello(os.Getenv("TRELLO_KEY"), os.Getenv("TRELLO_TOKEN"), boardID)
 			default:
-				return fmt.Errorf("unknown provider %q, must be github or trello", cmd.String("provider"))
+				return fmt.Errorf("unknown provider %q, must be gaia, github or trello", cmd.String("provider"))
 			}
 			if err := provider.Init(ctx); err != nil {
 				return fmt.Errorf("initializing provider: %w", err)
