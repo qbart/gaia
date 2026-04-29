@@ -54,10 +54,12 @@ type TaskID string
 type Project struct {
 	ID   ProjectID
 	Name string
+	Path string
 }
 
 type Manifest struct {
 	Name string `json:"name"`
+	Path string `json:"path,omitempty"`
 }
 
 type Task struct {
@@ -187,37 +189,13 @@ func (s *Store) CreateProject(name string) (Project, error) {
 
 	var result Project
 	err := s.withRootLock(func() error {
-		id := ProjectID(base)
-		for i := 2; ; i++ {
-			if _, err := os.Stat(s.manifestPath(id)); errors.Is(err, os.ErrNotExist) {
-				break
-			} else if err != nil {
-				return fmt.Errorf("checking project dir: %w", err)
-			}
-			id = ProjectID(base + "-" + strconv.Itoa(i))
-		}
-
-		dir := s.projectDir(id)
-		if err := os.MkdirAll(dir, 0o755); err != nil {
-			return fmt.Errorf("creating project dir: %w", err)
-		}
-		for _, st := range Statuses {
-			if err := os.MkdirAll(s.statusDir(id, st), 0o755); err != nil {
-				return fmt.Errorf("creating status dir %s: %w", st, err)
-			}
-		}
-
-		data, err := json.MarshalIndent(Manifest{Name: name}, "", "  ")
+		id, err := s.uniqueProjectID(base)
 		if err != nil {
-			return fmt.Errorf("encoding manifest: %w", err)
+			return err
 		}
-		if err := atomicWrite(s.manifestPath(id), data); err != nil {
-			return fmt.Errorf("writing manifest: %w", err)
+		if err := s.writeProjectLayout(id, Manifest{Name: name}); err != nil {
+			return err
 		}
-		if err := atomicWrite(s.sequencePath(id), []byte("0")); err != nil {
-			return fmt.Errorf("writing sequence: %w", err)
-		}
-
 		result = Project{ID: id, Name: name}
 		return nil
 	})
@@ -225,6 +203,109 @@ func (s *Store) CreateProject(name string) (Project, error) {
 		return Project{}, err
 	}
 	return result, nil
+}
+
+// uniqueProjectID returns base, or base-N if base is already taken on disk.
+// Caller must hold the root lock.
+func (s *Store) uniqueProjectID(base string) (ProjectID, error) {
+	id := ProjectID(base)
+	for i := 2; ; i++ {
+		if _, err := os.Stat(s.manifestPath(id)); errors.Is(err, os.ErrNotExist) {
+			return id, nil
+		} else if err != nil {
+			return "", fmt.Errorf("checking project dir: %w", err)
+		}
+		id = ProjectID(base + "-" + strconv.Itoa(i))
+	}
+}
+
+// writeProjectLayout creates the project directory tree (status folders,
+// manifest, sequence). Caller must hold the root lock.
+func (s *Store) writeProjectLayout(id ProjectID, m Manifest) error {
+	dir := s.projectDir(id)
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		return fmt.Errorf("creating project dir: %w", err)
+	}
+	for _, st := range Statuses {
+		if err := os.MkdirAll(s.statusDir(id, st), 0o755); err != nil {
+			return fmt.Errorf("creating status dir %s: %w", st, err)
+		}
+	}
+	data, err := json.MarshalIndent(m, "", "  ")
+	if err != nil {
+		return fmt.Errorf("encoding manifest: %w", err)
+	}
+	if err := atomicWrite(s.manifestPath(id), data); err != nil {
+		return fmt.Errorf("writing manifest: %w", err)
+	}
+	if err := atomicWrite(s.sequencePath(id), []byte("0")); err != nil {
+		return fmt.Errorf("writing sequence: %w", err)
+	}
+	return nil
+}
+
+// ScanProjects discovers folders in scanDir that contain a .git subdirectory
+// and registers each as a project (manifest with name=folder name and
+// path=absolute path). Skips folders whose absolute path is already
+// registered, so it is safe to call on every server boot.
+func (s *Store) ScanProjects(scanDir string) ([]Project, error) {
+	absScan, err := filepath.Abs(scanDir)
+	if err != nil {
+		return nil, fmt.Errorf("resolving scan dir: %w", err)
+	}
+	entries, err := os.ReadDir(absScan)
+	if err != nil {
+		return nil, fmt.Errorf("reading scan dir: %w", err)
+	}
+	existing, err := s.ListProjects()
+	if err != nil {
+		return nil, err
+	}
+	known := make(map[string]struct{}, len(existing))
+	for _, p := range existing {
+		if p.Path != "" {
+			known[p.Path] = struct{}{}
+		}
+	}
+
+	var added []Project
+	err = s.withRootLock(func() error {
+		for _, e := range entries {
+			if !e.IsDir() {
+				continue
+			}
+			name := e.Name()
+			if strings.HasPrefix(name, ".") {
+				continue
+			}
+			path := filepath.Join(absScan, name)
+			gitInfo, err := os.Stat(filepath.Join(path, ".git"))
+			if err != nil || !gitInfo.IsDir() {
+				continue
+			}
+			if _, ok := known[path]; ok {
+				continue
+			}
+			base := scanNameToSlug(name)
+			if base == "" {
+				continue
+			}
+			id, err := s.uniqueProjectID(base)
+			if err != nil {
+				return err
+			}
+			if err := s.writeProjectLayout(id, Manifest{Name: name, Path: path}); err != nil {
+				return err
+			}
+			known[path] = struct{}{}
+			added = append(added, Project{ID: id, Name: name, Path: path})
+		}
+		return nil
+	})
+	if err != nil {
+		return nil, err
+	}
+	return added, nil
 }
 
 func (s *Store) ListProjects() ([]Project, error) {
@@ -248,7 +329,7 @@ func (s *Store) ListProjects() ([]Project, error) {
 			}
 			return nil, err
 		}
-		out = append(out, Project{ID: id, Name: m.Name})
+		out = append(out, Project{ID: id, Name: m.Name, Path: m.Path})
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].ID < out[j].ID })
 	return out, nil
@@ -259,7 +340,7 @@ func (s *Store) GetProject(id ProjectID) (Project, error) {
 	if err != nil {
 		return Project{}, err
 	}
-	return Project{ID: id, Name: m.Name}, nil
+	return Project{ID: id, Name: m.Name, Path: m.Path}, nil
 }
 
 func (s *Store) readManifest(id ProjectID) (Manifest, error) {
@@ -792,4 +873,30 @@ func validateProjectName(name string) error {
 // nameToSlug converts a validated project name into a directory-safe slug.
 func nameToSlug(name string) string {
 	return strings.ReplaceAll(name, " ", "-")
+}
+
+// scanNameToSlug converts an arbitrary folder name into a project ID slug:
+// lowercases, keeps [a-z0-9-_], collapses runs of other chars into a single
+// '-', and trims leading/trailing dashes.
+func scanNameToSlug(name string) string {
+	var b strings.Builder
+	dash := false
+	for _, r := range strings.ToLower(name) {
+		switch {
+		case r >= 'a' && r <= 'z', r >= '0' && r <= '9', r == '_':
+			b.WriteRune(r)
+			dash = false
+		case r == '-':
+			if b.Len() > 0 && !dash {
+				b.WriteRune('-')
+				dash = true
+			}
+		default:
+			if b.Len() > 0 && !dash {
+				b.WriteRune('-')
+				dash = true
+			}
+		}
+	}
+	return strings.TrimRight(b.String(), "-")
 }

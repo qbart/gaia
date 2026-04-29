@@ -44,6 +44,20 @@ func (s *Server) Run(ctx context.Context) {
 		s.Store = core.NewStore(root)
 	}
 
+	cwd, err := os.Getwd()
+	if err != nil {
+		slog.Error("getting working directory", "err", err.Error())
+		os.Exit(1)
+	}
+	added, err := s.Store.ScanProjects(cwd)
+	if err != nil {
+		slog.Error("scanning projects", "err", err.Error(), "dir", cwd)
+		os.Exit(1)
+	}
+	for _, p := range added {
+		slog.Info("registered project", "id", p.ID, "name", p.Name, "path", p.Path)
+	}
+
 	srv := zen.NewHttpServer(&zen.Options{
 		AllowedHosts: config.AllowedHosts(),
 		CorsOrigins:  config.AllowedOrigins(),
