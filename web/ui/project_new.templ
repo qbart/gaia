@@ -9,31 +9,31 @@ templ ProjectNewPage(data ProjectNewPageData) {
             for _, p := range data.Projects {
                 <a href={ templ.SafeURL("/projects/" + string(p.ID)) } class="gaia-workspace-item" title={ p.Name }>{ p.Icon }</a>
             }
-            <a href="/projects/new" class="gaia-workspace-item gaia-workspace-item-active" title="Add project">+</a>
+            <a href="/projects/new" class="gaia-workspace-item gaia-workspace-item-active" title="Clone project">+</a>
         </aside>
         <main class="gaia-board">
             <header class="gaia-board-header">
-                <h2 class="gaia-board-title">New project</h2>
+                <h2 class="gaia-board-title">Clone project</h2>
             </header>
             <div class="gaia-board-form">
                 <form method="post" action="/projects" class="gaia-form">
                     if data.Error != "" {
                         <div class="gaia-form-error">{ data.Error }</div>
                     }
-                    <label class="gaia-form-label" for="project-name">Name</label>
+                    <label class="gaia-form-label" for="project-url">Git URL</label>
                     <input
-                        id="project-name"
+                        id="project-url"
                         class="gaia-form-input"
                         type="text"
-                        name="name"
-                        value={ data.Name }
-                        placeholder="My project"
+                        name="url"
+                        value={ data.URL }
+                        placeholder="git@github.com:owner/repo.git"
                         autofocus
                         required
                     />
                     <div class="gaia-form-actions">
                         <a href="/" class="gaia-form-cancel">Cancel</a>
-                        <button type="submit" class="gaia-form-submit">Create</button>
+                        <button type="submit" class="gaia-form-submit">Clone</button>
                     </div>
                 </form>
             </div>

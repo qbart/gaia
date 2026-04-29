@@ -4,9 +4,12 @@ import (
 	"context"
 	"embed"
 	"errors"
+	"fmt"
 	"log/slog"
 	"net/http"
 	"os"
+	"os/exec"
+	"path/filepath"
 	"strings"
 
 	"github.com/SoftKiwiGames/zen/zen"
@@ -20,8 +23,9 @@ import (
 var static embed.FS
 
 type Server struct {
-	Envs  zen.Envs
-	Store *core.Store
+	Envs    zen.Envs
+	Store   *core.Store
+	ScanDir string
 }
 
 func (s *Server) Run(ctx context.Context) {
@@ -44,14 +48,17 @@ func (s *Server) Run(ctx context.Context) {
 		s.Store = core.NewStore(root)
 	}
 
-	cwd, err := os.Getwd()
-	if err != nil {
-		slog.Error("getting working directory", "err", err.Error())
-		os.Exit(1)
+	if s.ScanDir == "" {
+		cwd, err := os.Getwd()
+		if err != nil {
+			slog.Error("getting working directory", "err", err.Error())
+			os.Exit(1)
+		}
+		s.ScanDir = cwd
 	}
-	added, err := s.Store.ScanProjects(cwd)
+	added, err := s.Store.ScanProjects(s.ScanDir)
 	if err != nil {
-		slog.Error("scanning projects", "err", err.Error(), "dir", cwd)
+		slog.Error("scanning projects", "err", err.Error(), "dir", s.ScanDir)
 		os.Exit(1)
 	}
 	for _, p := range added {
@@ -116,8 +123,8 @@ func (s *Server) Run(ctx context.Context) {
 				zen.HttpBadRequest(w, err, "invalid form")
 				return
 			}
-			name := r.FormValue("name")
-			project, err := s.Store.CreateProject(name)
+			url := strings.TrimSpace(r.FormValue("url"))
+			project, err := s.cloneProject(r.Context(), url)
 			if err != nil {
 				projects, listErr := s.Store.ListProjects()
 				if listErr != nil {
@@ -126,7 +133,7 @@ func (s *Server) Run(ctx context.Context) {
 				}
 				data := ui.ProjectNewPageData{
 					Projects: toUIProjects(projects),
-					Name:     name,
+					URL:      url,
 					Error:    err.Error(),
 				}
 				w.WriteHeader(http.StatusUnprocessableEntity)
@@ -509,6 +516,79 @@ func iconFromName(name string) string {
 		return strings.ToUpper(string(r))
 	}
 	return "?"
+}
+
+// cloneProject runs `git clone` into ScanDir and registers the resulting
+// folder as a project. Returns the registered project so the caller can
+// redirect to it.
+func (s *Server) cloneProject(ctx context.Context, url string) (core.Project, error) {
+	if url == "" {
+		return core.Project{}, fmt.Errorf("git url is required")
+	}
+	if strings.HasPrefix(url, "-") {
+		return core.Project{}, fmt.Errorf("invalid git url")
+	}
+	dirName := deriveCloneDir(url)
+	if dirName == "" {
+		return core.Project{}, fmt.Errorf("could not derive a directory name from url")
+	}
+	dest := filepath.Join(s.ScanDir, dirName)
+	if _, err := os.Stat(dest); err == nil {
+		return core.Project{}, fmt.Errorf("directory %s already exists", dirName)
+	} else if !errors.Is(err, os.ErrNotExist) {
+		return core.Project{}, fmt.Errorf("checking destination: %w", err)
+	}
+
+	cmd := exec.CommandContext(ctx, "git", "clone", "--", url, dirName)
+	cmd.Dir = s.ScanDir
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		msg := strings.TrimSpace(string(out))
+		if msg == "" {
+			msg = err.Error()
+		}
+		return core.Project{}, fmt.Errorf("git clone failed: %s", msg)
+	}
+
+	added, err := s.Store.ScanProjects(s.ScanDir)
+	if err != nil {
+		return core.Project{}, fmt.Errorf("scanning projects: %w", err)
+	}
+	for _, p := range added {
+		if p.Path == dest {
+			return p, nil
+		}
+	}
+	for _, p := range existingByPath(s.Store, dest) {
+		return p, nil
+	}
+	return core.Project{}, fmt.Errorf("clone succeeded but project not found")
+}
+
+func existingByPath(store *core.Store, path string) []core.Project {
+	all, err := store.ListProjects()
+	if err != nil {
+		return nil
+	}
+	out := make([]core.Project, 0, 1)
+	for _, p := range all {
+		if p.Path == path {
+			out = append(out, p)
+		}
+	}
+	return out
+}
+
+// deriveCloneDir picks the directory name `git clone` would default to:
+// the segment after the final '/' or ':', with a trailing ".git" stripped.
+func deriveCloneDir(url string) string {
+	s := strings.TrimSpace(url)
+	s = strings.TrimRight(s, "/")
+	if i := strings.LastIndexAny(s, "/:"); i >= 0 {
+		s = s[i+1:]
+	}
+	s = strings.TrimSuffix(s, ".git")
+	return s
 }
 
 // parseTaskIDs splits a comma-separated list of task ids, trimming whitespace
