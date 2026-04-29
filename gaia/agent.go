@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"strings"
 	"time"
 
@@ -37,6 +38,7 @@ type Agent struct {
 	Provider        pm.Provider
 	Model           string
 	GodMode         bool
+	Dir             string
 	TasksDocs       *Tasks
 	TasksBrainstorm *Tasks
 	TasksTodo       *Tasks
@@ -48,6 +50,13 @@ type Agent struct {
 	WaitDuration    time.Duration
 	HookTimeout     time.Duration
 	currentTask     *pm.Task
+}
+
+func (a *Agent) path(p string) string {
+	if a.Dir == "" {
+		return p
+	}
+	return filepath.Join(a.Dir, p)
 }
 
 func NewAgent(p pm.Provider, model string, god bool, waitDuration time.Duration, hookTimeout time.Duration) *Agent {
@@ -253,6 +262,7 @@ func (a *Agent) Do(ctx context.Context) {
 				args = append(args, "--model", a.Model)
 			}
 			cmd := exec.CommandContext(ctx, "claude", args...)
+			cmd.Dir = a.Dir
 			cmd.Stdin = strings.NewReader(sb.String())
 			stdout, err := cmd.StdoutPipe()
 			if err != nil {
@@ -277,7 +287,7 @@ func (a *Agent) Do(ctx context.Context) {
 			if a.RateLimit {
 				break
 			}
-			if _, err := os.Stat(".gaia/" + string(task.ID) + ".md"); err == nil {
+			if _, err := os.Stat(a.path(".gaia/" + string(task.ID) + ".md")); err == nil {
 				break
 			}
 		}
@@ -297,13 +307,13 @@ func (a *Agent) Report(ctx context.Context) {
 		a.Dispatcher <- Command{Kind: "report", Enable: false}
 	}()
 
-	os.MkdirAll(".gaia", 0755)
+	os.MkdirAll(a.path(".gaia"), 0755)
 	tasks := a.TasksReview.All()
 	for _, task := range tasks {
 		if err := a.Provider.MoveTaskTo(ctx, task.ID, pm.StatusInReview); err != nil {
 			a.Errors <- err
 		}
-		if note, err := os.ReadFile(".gaia/" + string(task.ID) + ".md"); err == nil {
+		if note, err := os.ReadFile(a.path(".gaia/" + string(task.ID) + ".md")); err == nil {
 			if err := a.Provider.CommentTask(ctx, task.ID, string(note)); err != nil {
 				a.Errors <- err
 			}
@@ -319,7 +329,7 @@ func (a *Agent) Sync(ctx context.Context) {
 		a.Dispatcher <- Command{Kind: "sync", Enable: false}
 	}()
 
-	entries, err := os.ReadDir(".gaia")
+	entries, err := os.ReadDir(a.path(".gaia"))
 	if err != nil || len(entries) == 0 {
 		return
 	}
@@ -328,24 +338,25 @@ func (a *Agent) Sync(ctx context.Context) {
 	sb.WriteString("Generate a concise git commit message for the following changes. Output only the commit message, nothing else.\n\n")
 	for _, entry := range entries {
 		if !entry.IsDir() && strings.HasSuffix(entry.Name(), ".md") {
-			if data, err := os.ReadFile(".gaia/" + entry.Name()); err == nil {
+			if data, err := os.ReadFile(a.path(".gaia/" + entry.Name())); err == nil {
 				sb.Write(data)
 				sb.WriteString("\n\n")
 			}
 		}
 	}
 	// Clean .gaia/ but preserve hooks/ directory
-	if entries, err := os.ReadDir(".gaia"); err == nil {
+	if entries, err := os.ReadDir(a.path(".gaia")); err == nil {
 		for _, e := range entries {
 			if e.Name() == "hooks" {
 				continue
 			}
-			os.RemoveAll(".gaia/" + e.Name())
+			os.RemoveAll(a.path(".gaia/" + e.Name()))
 		}
 	}
 
 	commitMsg := "chore: automated changes"
 	commitCmd := exec.CommandContext(ctx, "claude", "-p", "--output-format", "text")
+	commitCmd.Dir = a.Dir
 	commitCmd.Stdin = strings.NewReader(sb.String())
 	if out, err := commitCmd.Output(); err != nil {
 		a.Errors <- err
@@ -353,15 +364,21 @@ func (a *Agent) Sync(ctx context.Context) {
 		commitMsg = msg
 	}
 
-	if err := exec.CommandContext(ctx, "git", "add", "-A").Run(); err != nil {
+	addCmd := exec.CommandContext(ctx, "git", "add", "-A")
+	addCmd.Dir = a.Dir
+	if err := addCmd.Run(); err != nil {
 		a.Errors <- err
 		return
 	}
-	if err := exec.CommandContext(ctx, "git", "commit", "-m", commitMsg).Run(); err != nil {
+	commitGit := exec.CommandContext(ctx, "git", "commit", "-m", commitMsg)
+	commitGit.Dir = a.Dir
+	if err := commitGit.Run(); err != nil {
 		a.Errors <- err
 		return
 	}
-	if err := exec.CommandContext(ctx, "git", "push", "origin", "HEAD").Run(); err != nil {
+	pushCmd := exec.CommandContext(ctx, "git", "push", "origin", "HEAD")
+	pushCmd.Dir = a.Dir
+	if err := pushCmd.Run(); err != nil {
 		a.Errors <- err
 		return
 	}
@@ -407,6 +424,7 @@ func (a *Agent) Brainstorm(ctx context.Context) {
 		args = append(args, "--model", a.Model)
 	}
 	cmd := exec.CommandContext(ctx, "claude", args...)
+	cmd.Dir = a.Dir
 	cmd.Stdin = strings.NewReader(sb.String())
 	stdout, err := cmd.StdoutPipe()
 	if err != nil {
@@ -431,7 +449,7 @@ func (a *Agent) Brainstorm(ctx context.Context) {
 		}
 	}
 
-	const brainstormFile = ".gaia/brainstorm.json"
+	brainstormFile := a.path(".gaia/brainstorm.json")
 	data, err := os.ReadFile(brainstormFile)
 	if err != nil {
 		a.Errors <- err
@@ -455,7 +473,7 @@ func (a *Agent) Brainstorm(ctx context.Context) {
 
 func (a *Agent) RunHook(ctx context.Context, stepID string) {
 	hookPath := ".gaia/hooks/after-" + stepID
-	info, err := os.Stat(hookPath)
+	info, err := os.Stat(a.path(hookPath))
 	if err != nil || info.IsDir() {
 		return
 	}
@@ -468,6 +486,7 @@ func (a *Agent) RunHook(ctx context.Context, stepID string) {
 	defer cancel()
 
 	cmd := exec.CommandContext(hookCtx, "./"+hookPath)
+	cmd.Dir = a.Dir
 	cmd.Env = append(os.Environ(),
 		"GAIA_STEP="+stepID,
 	)

@@ -11,12 +11,14 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"time"
 
 	"github.com/SoftKiwiGames/zen/zen"
 	"github.com/qbart/gaia/config"
 	"github.com/qbart/gaia/pm"
 	"github.com/qbart/gaia/web/core"
 	"github.com/qbart/gaia/web/ui"
+	"github.com/tmaxmax/go-sse"
 )
 
 //go:embed static
@@ -26,6 +28,7 @@ type Server struct {
 	Envs    zen.Envs
 	Store   *core.Store
 	ScanDir string
+	Worker  *Worker
 }
 
 func (s *Server) Run(ctx context.Context) {
@@ -63,6 +66,28 @@ func (s *Server) Run(ctx context.Context) {
 	}
 	for _, p := range added {
 		slog.Info("registered project", "id", p.ID, "name", p.Name, "path", p.Path)
+	}
+
+	apiToken := strings.TrimSpace(os.Getenv("GAIA_TOKEN"))
+	if s.Worker == nil {
+		baseURL := strings.TrimSpace(os.Getenv("GAIA_URL"))
+		if baseURL == "" {
+			baseURL = "http://localhost:4000"
+		}
+		s.Worker = NewWorker(baseURL, apiToken, "", true, 10*time.Second, 15*time.Minute)
+	}
+	go s.Worker.Run(ctx)
+
+	sseHandler := newSSEServer()
+	go s.bridgeWorkerToSSE(ctx, sseHandler)
+
+	all, err := s.Store.ListProjects()
+	if err != nil {
+		slog.Error("listing projects", "err", err.Error())
+		os.Exit(1)
+	}
+	for _, p := range all {
+		s.Worker.Input <- WorkerEvent{Kind: WorkerEventProjectAdded, Project: p}
 	}
 
 	srv := zen.NewHttpServer(&zen.Options{
@@ -141,6 +166,10 @@ func (s *Server) Run(ctx context.Context) {
 				return
 			}
 			http.Redirect(w, r, "/projects/"+string(project.ID), http.StatusSeeOther)
+		})
+
+		r.Get("/projects/{id}/events", func(w http.ResponseWriter, r *http.Request) {
+			sseHandler.ServeHTTP(w, r)
 		})
 
 		r.Get("/projects/{id}", func(w http.ResponseWriter, r *http.Request) {
@@ -518,6 +547,38 @@ func iconFromName(name string) string {
 	return "?"
 }
 
+// newSSEServer builds an SSE server that lets a client subscribe to a single
+// topic (the project ID) via the `id` path parameter. Clients only see logs
+// for the project they are viewing.
+func newSSEServer() *sse.Server {
+	return &sse.Server{
+		OnSession: func(w http.ResponseWriter, r *http.Request) ([]string, bool) {
+			id := strings.TrimSpace(zen.Param(r, "id"))
+			if id == "" {
+				w.WriteHeader(http.StatusBadRequest)
+				return nil, false
+			}
+			return []string{id}, true
+		},
+	}
+}
+
+// bridgeWorkerToSSE forwards every WorkerLog into the SSE server, publishing
+// to a topic named after the project ID so subscribers receive only their
+// project's stream.
+func (s *Server) bridgeWorkerToSSE(ctx context.Context, h *sse.Server) {
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case log := <-s.Worker.Output:
+			msg := &sse.Message{Type: sse.Type(log.Stream)}
+			msg.AppendData(log.Text)
+			_ = h.Publish(msg, string(log.ProjectID))
+		}
+	}
+}
+
 // cloneProject runs `git clone` into ScanDir and registers the resulting
 // folder as a project. Returns the registered project so the caller can
 // redirect to it.
@@ -556,6 +617,9 @@ func (s *Server) cloneProject(ctx context.Context, url string) (core.Project, er
 	}
 	for _, p := range added {
 		if p.Path == dest {
+			if s.Worker != nil {
+				s.Worker.Input <- WorkerEvent{Kind: WorkerEventProjectAdded, Project: p}
+			}
 			return p, nil
 		}
 	}
