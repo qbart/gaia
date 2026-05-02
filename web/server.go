@@ -76,7 +76,10 @@ func (s *Server) Run(ctx context.Context) {
 		}
 		s.Worker = NewWorker(baseURL, apiToken, "", true, 10*time.Second, 15*time.Minute)
 	}
-	go s.Worker.Run(ctx)
+	go func() {
+		time.Sleep(5 * time.Second)
+		s.Worker.Run(ctx)
+	}()
 
 	sseHandler := newSSEServer()
 	go s.bridgeWorkerToSSE(ctx, sseHandler)
