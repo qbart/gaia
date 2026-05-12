@@ -108,7 +108,7 @@ func (w *Worker) startAgent(ctx context.Context, p core.Project) {
 		return
 	}
 
-	provider := pm.NewGaia(w.BaseURL, w.Token, string(p.ID))
+	provider := pm.NewGaia(w.BaseURL, w.Token, formatProjectID(p.ID))
 	if err := provider.Init(ctx); err != nil {
 		w.mu.Unlock()
 		slog.Error("worker: provider init failed", "id", p.ID, "err", err.Error())

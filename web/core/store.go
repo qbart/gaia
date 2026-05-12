@@ -1,17 +1,31 @@
 package core
 
 import (
+	"context"
+	"database/sql"
+	"embed"
 	"encoding/json"
 	"errors"
 	"fmt"
-	"os"
-	"path/filepath"
+	"io/fs"
 	"sort"
-	"strconv"
 	"strings"
-	"sync"
-	"syscall"
+	"time"
+
+	"github.com/SoftKiwiGames/zen/zen/sqlite"
 )
+
+//go:embed migrations
+var migrationsFS embed.FS
+
+// Migrations exposes the embedded migration files so callers (typically the
+// server bootstrap) can hand them to zen/sqlite.
+func Migrations() fs.FS {
+	return migrationsFS
+}
+
+// MigrationsDir is the path inside Migrations() where the .sql files live.
+const MigrationsDir = "migrations"
 
 var (
 	ErrInvalidProjectName = errors.New("project name must not be empty")
@@ -35,8 +49,8 @@ const (
 	StatusArchive    Status = "archive"
 )
 
-// Statuses lists every status folder that exists on disk. StatusArchive is
-// hidden from the UI but stored alongside the others.
+// Statuses lists every status in display order. ListTasksByProject groups
+// tasks by this order.
 var Statuses = []Status{
 	StatusDocs,
 	StatusBrainstorm,
@@ -48,18 +62,30 @@ var Statuses = []Status{
 	StatusArchive,
 }
 
-type ProjectID string
-type TaskID string
+// statusRank maps a status to its index in Statuses so we can ORDER BY it.
+var statusRank = func() map[Status]int {
+	m := make(map[Status]int, len(Statuses))
+	for i, s := range Statuses {
+		m[s] = i
+	}
+	return m
+}()
+
+// ProjectID is the autoincrement primary key on projects. URLs and the
+// pm.ProjectID boundary type both render it as a decimal string. The Slug
+// field on Project is stored alongside (unique, derived from the name)
+// but is not used for routing.
+type ProjectID int64
+
+// TaskID is the SQLite autoincrement primary key on tasks. Globally unique
+// across projects.
+type TaskID int64
 
 type Project struct {
 	ID   ProjectID
+	Slug string
 	Name string
 	Path string
-}
-
-type Manifest struct {
-	Name string `json:"name"`
-	Path string `json:"path,omitempty"`
 }
 
 type Task struct {
@@ -73,113 +99,21 @@ type Task struct {
 	Comments    []string  `json:"-"`
 }
 
-// Store is a file-system backed project + task repository rooted at Root.
-//
-// Concurrency model:
-//   - Mutations on a project (create/update/move task, add comment, sequence
-//     bump) acquire BOTH a per-project sync.Mutex and an exclusive flock on
-//     <project>/.lock. The mutex serializes goroutines inside this process,
-//     while flock extends serialization across processes that share GAIA_DATA.
-//   - Project creation goes through a root-wide sync.Mutex and an exclusive
-//     flock on <root>/.lock so two callers picking the same slug cannot race.
-//   - Reads (GetTask, ListTasksByProject, ListProjects) are lock-free; every
-//     write goes through atomicWrite/os.Rename so readers always see a
-//     complete file.
+// Store persists projects, tasks, and comments in SQLite. Writes go through
+// the single-connection write pool zen/sqlite sets up, so concurrent writes
+// from this process are already serialized; we use transactions for
+// multi-statement mutations to get atomicity.
 type Store struct {
-	Root string
-
-	rootMu sync.Mutex
-
-	mu    sync.Mutex
-	locks map[ProjectID]*sync.Mutex
+	DB *sqlite.SQLite
 }
 
-func NewStore(root string) *Store {
-	return &Store{
-		Root:  root,
-		locks: make(map[ProjectID]*sync.Mutex),
-	}
+func NewStore(db *sqlite.SQLite) *Store {
+	return &Store{DB: db}
 }
 
-func (s *Store) projectMutex(id ProjectID) *sync.Mutex {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	if l, ok := s.locks[id]; ok {
-		return l
-	}
-	l := &sync.Mutex{}
-	s.locks[id] = l
-	return l
-}
-
-// withProjectLock serializes mutations to a single project, both inside this
-// process (via projectMutex) and across processes (via flock on <project>/.lock).
-// The project must already exist on disk.
-func (s *Store) withProjectLock(id ProjectID, fn func() error) error {
-	pl := s.projectMutex(id)
-	pl.Lock()
-	defer pl.Unlock()
-
-	lockPath := filepath.Join(s.projectDir(id), ".lock")
-	f, err := os.OpenFile(lockPath, os.O_CREATE|os.O_RDWR, 0o644)
-	if err != nil {
-		return fmt.Errorf("opening project lock: %w", err)
-	}
-	defer f.Close()
-	if err := syscall.Flock(int(f.Fd()), syscall.LOCK_EX); err != nil {
-		return fmt.Errorf("acquiring project lock: %w", err)
-	}
-	defer syscall.Flock(int(f.Fd()), syscall.LOCK_UN)
-
-	return fn()
-}
-
-// withRootLock serializes operations that modify the data root itself
-// (currently project creation) across processes and goroutines.
-func (s *Store) withRootLock(fn func() error) error {
-	s.rootMu.Lock()
-	defer s.rootMu.Unlock()
-
-	if err := os.MkdirAll(s.Root, 0o755); err != nil {
-		return fmt.Errorf("creating data root: %w", err)
-	}
-	lockPath := filepath.Join(s.Root, ".lock")
-	f, err := os.OpenFile(lockPath, os.O_CREATE|os.O_RDWR, 0o644)
-	if err != nil {
-		return fmt.Errorf("opening root lock: %w", err)
-	}
-	defer f.Close()
-	if err := syscall.Flock(int(f.Fd()), syscall.LOCK_EX); err != nil {
-		return fmt.Errorf("acquiring root lock: %w", err)
-	}
-	defer syscall.Flock(int(f.Fd()), syscall.LOCK_UN)
-
-	return fn()
-}
-
-func (s *Store) projectDir(id ProjectID) string {
-	return filepath.Join(s.Root, string(id))
-}
-
-func (s *Store) manifestPath(id ProjectID) string {
-	return filepath.Join(s.projectDir(id), "manifest.json")
-}
-
-func (s *Store) sequencePath(id ProjectID) string {
-	return filepath.Join(s.projectDir(id), "sequence")
-}
-
-func (s *Store) statusDir(id ProjectID, status Status) string {
-	return filepath.Join(s.projectDir(id), "tasks", string(status))
-}
-
-func (s *Store) taskPath(id ProjectID, status Status, taskID TaskID) string {
-	return filepath.Join(s.statusDir(id, status), string(taskID)+".json")
-}
-
-func (s *Store) commentsPath(id ProjectID, status Status, taskID TaskID) string {
-	return filepath.Join(s.statusDir(id, status), string(taskID)+".comments.json")
-}
+// ──────────────────────────────────────────────────────────────────────────
+// Projects
+// ──────────────────────────────────────────────────────────────────────────
 
 func (s *Store) CreateProject(name string) (Project, error) {
 	if err := validateProjectName(name); err != nil {
@@ -187,16 +121,23 @@ func (s *Store) CreateProject(name string) (Project, error) {
 	}
 	base := nameToSlug(name)
 
+	ctx := context.Background()
 	var result Project
-	err := s.withRootLock(func() error {
-		id, err := s.uniqueProjectID(base)
+	err := s.DB.Transaction(ctx, func(tx *sql.Tx) error {
+		q := s.DB.WithTx(tx)
+		slug, err := uniqueProjectSlug(ctx, q, base)
 		if err != nil {
 			return err
 		}
-		if err := s.writeProjectLayout(id, Manifest{Name: name}); err != nil {
-			return err
+		var id int64
+		err = q.QueryRow(ctx,
+			`INSERT INTO projects (slug, name, path, created_at) VALUES (?, ?, '', ?) RETURNING id`,
+			slug, name, sqlite.Timestamp(time.Now()),
+		).Scan(&id)
+		if err != nil {
+			return fmt.Errorf("insert project: %w", err)
 		}
-		result = Project{ID: id, Name: name}
+		result = Project{ID: ProjectID(id), Slug: slug, Name: name}
 		return nil
 	})
 	if err != nil {
@@ -205,100 +146,71 @@ func (s *Store) CreateProject(name string) (Project, error) {
 	return result, nil
 }
 
-// uniqueProjectID returns base, or base-N if base is already taken on disk.
-// Caller must hold the root lock.
-func (s *Store) uniqueProjectID(base string) (ProjectID, error) {
-	id := ProjectID(base)
+// uniqueProjectSlug returns base, or base-N (N≥2) if base is already taken.
+// Runs inside the caller's transaction so the chosen slug can't race with
+// another writer.
+func uniqueProjectSlug(ctx context.Context, q *sqlite.SQLiteQuery, base string) (string, error) {
+	candidate := base
 	for i := 2; ; i++ {
-		if _, err := os.Stat(s.manifestPath(id)); errors.Is(err, os.ErrNotExist) {
-			return id, nil
-		} else if err != nil {
-			return "", fmt.Errorf("checking project dir: %w", err)
+		var exists int
+		err := q.QueryRow(ctx,
+			`SELECT 1 FROM projects WHERE slug = ? LIMIT 1`,
+			candidate,
+		).Scan(&exists)
+		if sqlite.NoRows(err) {
+			return candidate, nil
 		}
-		id = ProjectID(base + "-" + strconv.Itoa(i))
+		if err != nil {
+			return "", fmt.Errorf("check project slug: %w", err)
+		}
+		candidate = fmt.Sprintf("%s-%d", base, i)
 	}
 }
 
-// writeProjectLayout creates the project directory tree (status folders,
-// manifest, sequence). Caller must hold the root lock.
-func (s *Store) writeProjectLayout(id ProjectID, m Manifest) error {
-	dir := s.projectDir(id)
-	if err := os.MkdirAll(dir, 0o755); err != nil {
-		return fmt.Errorf("creating project dir: %w", err)
-	}
-	for _, st := range Statuses {
-		if err := os.MkdirAll(s.statusDir(id, st), 0o755); err != nil {
-			return fmt.Errorf("creating status dir %s: %w", st, err)
-		}
-	}
-	data, err := json.MarshalIndent(m, "", "  ")
-	if err != nil {
-		return fmt.Errorf("encoding manifest: %w", err)
-	}
-	if err := atomicWrite(s.manifestPath(id), data); err != nil {
-		return fmt.Errorf("writing manifest: %w", err)
-	}
-	if err := atomicWrite(s.sequencePath(id), []byte("0")); err != nil {
-		return fmt.Errorf("writing sequence: %w", err)
-	}
-	return nil
-}
-
-// ScanProjects discovers folders in scanDir that contain a .git subdirectory
-// and registers each as a project (manifest with name=folder name and
-// path=absolute path). Skips folders whose absolute path is already
-// registered, so it is safe to call on every server boot.
+// ScanProjects walks scanDir and registers every folder containing a .git
+// subdirectory as a project (if not already registered by path). Returns
+// the freshly-added projects.
 func (s *Store) ScanProjects(scanDir string) ([]Project, error) {
-	absScan, err := filepath.Abs(scanDir)
+	absScan, err := absPath(scanDir)
 	if err != nil {
 		return nil, fmt.Errorf("resolving scan dir: %w", err)
 	}
-	entries, err := os.ReadDir(absScan)
-	if err != nil {
-		return nil, fmt.Errorf("reading scan dir: %w", err)
-	}
-	existing, err := s.ListProjects()
+	entries, err := readScanDir(absScan)
 	if err != nil {
 		return nil, err
 	}
-	known := make(map[string]struct{}, len(existing))
-	for _, p := range existing {
-		if p.Path != "" {
-			known[p.Path] = struct{}{}
-		}
+	known, err := s.knownPaths()
+	if err != nil {
+		return nil, err
 	}
 
+	ctx := context.Background()
 	var added []Project
-	err = s.withRootLock(func() error {
+	err = s.DB.Transaction(ctx, func(tx *sql.Tx) error {
+		q := s.DB.WithTx(tx)
 		for _, e := range entries {
-			if !e.IsDir() {
-				continue
-			}
-			name := e.Name()
-			if strings.HasPrefix(name, ".") {
-				continue
-			}
-			path := filepath.Join(absScan, name)
-			gitInfo, err := os.Stat(filepath.Join(path, ".git"))
-			if err != nil || !gitInfo.IsDir() {
-				continue
-			}
+			path := e.Path
 			if _, ok := known[path]; ok {
 				continue
 			}
-			base := scanNameToSlug(name)
+			base := scanNameToSlug(e.Name)
 			if base == "" {
 				continue
 			}
-			id, err := s.uniqueProjectID(base)
+			slug, err := uniqueProjectSlug(ctx, q, base)
 			if err != nil {
 				return err
 			}
-			if err := s.writeProjectLayout(id, Manifest{Name: name, Path: path}); err != nil {
-				return err
+			var id int64
+			err = q.QueryRow(ctx,
+				`INSERT INTO projects (slug, name, path, created_at) VALUES (?, ?, ?, ?) RETURNING id`,
+				slug, e.Name, path, sqlite.Timestamp(time.Now()),
+			).Scan(&id)
+			if err != nil {
+				return fmt.Errorf("insert scanned project: %w", err)
 			}
 			known[path] = struct{}{}
-			added = append(added, Project{ID: id, Name: name, Path: path})
+			added = append(added, Project{ID: ProjectID(id), Slug: slug, Name: e.Name, Path: path})
 		}
 		return nil
 	})
@@ -308,105 +220,70 @@ func (s *Store) ScanProjects(scanDir string) ([]Project, error) {
 	return added, nil
 }
 
-func (s *Store) ListProjects() ([]Project, error) {
-	entries, err := os.ReadDir(s.Root)
+func (s *Store) knownPaths() (map[string]struct{}, error) {
+	rows, err := s.DB.Query(context.Background(),
+		`SELECT path FROM projects WHERE path != ''`)
 	if err != nil {
-		if errors.Is(err, os.ErrNotExist) {
-			return nil, nil
-		}
-		return nil, fmt.Errorf("reading data root: %w", err)
+		return nil, fmt.Errorf("listing project paths: %w", err)
 	}
-	out := make([]Project, 0, len(entries))
-	for _, e := range entries {
-		if !e.IsDir() {
-			continue
+	defer rows.Close()
+	out := make(map[string]struct{})
+	for rows.Next() {
+		var p string
+		if err := rows.Scan(&p); err != nil {
+			return nil, fmt.Errorf("scanning project path: %w", err)
 		}
-		id := ProjectID(e.Name())
-		m, err := s.readManifest(id)
-		if err != nil {
-			if errors.Is(err, ErrProjectNotFound) {
-				continue
-			}
-			return nil, err
-		}
-		out = append(out, Project{ID: id, Name: m.Name, Path: m.Path})
+		out[p] = struct{}{}
 	}
-	sort.Slice(out, func(i, j int) bool { return out[i].ID < out[j].ID })
+	return out, rows.Err()
+}
+
+// ListProjects returns every project sorted alphabetically by slug so the
+// UI sidebar has a stable, human-readable order.
+func (s *Store) ListProjects() ([]Project, error) {
+	rows, err := s.DB.Query(context.Background(),
+		`SELECT id, slug, name, path FROM projects ORDER BY slug ASC`)
+	if err != nil {
+		return nil, fmt.Errorf("listing projects: %w", err)
+	}
+	defer rows.Close()
+	out := make([]Project, 0)
+	for rows.Next() {
+		var (
+			id              int64
+			slug, name, path string
+		)
+		if err := rows.Scan(&id, &slug, &name, &path); err != nil {
+			return nil, fmt.Errorf("scanning project: %w", err)
+		}
+		out = append(out, Project{ID: ProjectID(id), Slug: slug, Name: name, Path: path})
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
 	return out, nil
 }
 
+// GetProject loads a project by its internal integer id.
 func (s *Store) GetProject(id ProjectID) (Project, error) {
-	m, err := s.readManifest(id)
+	var (
+		slug, name, path string
+	)
+	err := s.DB.QueryRow(context.Background(),
+		`SELECT slug, name, path FROM projects WHERE id = ?`, int64(id),
+	).Scan(&slug, &name, &path)
+	if sqlite.NoRows(err) {
+		return Project{}, ErrProjectNotFound
+	}
 	if err != nil {
-		return Project{}, err
+		return Project{}, fmt.Errorf("loading project: %w", err)
 	}
-	return Project{ID: id, Name: m.Name, Path: m.Path}, nil
+	return Project{ID: id, Slug: slug, Name: name, Path: path}, nil
 }
 
-func (s *Store) readManifest(id ProjectID) (Manifest, error) {
-	data, err := os.ReadFile(s.manifestPath(id))
-	if err != nil {
-		if errors.Is(err, os.ErrNotExist) {
-			return Manifest{}, ErrProjectNotFound
-		}
-		return Manifest{}, fmt.Errorf("reading manifest: %w", err)
-	}
-	var m Manifest
-	if err := json.Unmarshal(data, &m); err != nil {
-		return Manifest{}, fmt.Errorf("parsing manifest: %w", err)
-	}
-	return m, nil
-}
-
-// NextSequence returns the next per-project task identifier and persists the
-// updated counter atomically. The first call after CreateProject returns 1.
-//
-// Holds the project lock for the read-modify-write of the sequence file, so
-// concurrent callers (in this process or another) always observe a strictly
-// increasing sequence with no duplicates.
-func (s *Store) NextSequence(id ProjectID) (uint64, error) {
-	if _, err := os.Stat(s.manifestPath(id)); err != nil {
-		if errors.Is(err, os.ErrNotExist) {
-			return 0, ErrProjectNotFound
-		}
-		return 0, fmt.Errorf("checking project: %w", err)
-	}
-	var n uint64
-	err := s.withProjectLock(id, func() error {
-		v, err := s.bumpSequence(id)
-		if err != nil {
-			return err
-		}
-		n = v
-		return nil
-	})
-	return n, err
-}
-
-// bumpSequence reads, increments, and rewrites the sequence file. The caller
-// must hold the project lock.
-func (s *Store) bumpSequence(id ProjectID) (uint64, error) {
-	cur := uint64(0)
-	data, err := os.ReadFile(s.sequencePath(id))
-	if err != nil && !errors.Is(err, os.ErrNotExist) {
-		return 0, fmt.Errorf("reading sequence: %w", err)
-	}
-	if len(data) > 0 {
-		text := strings.TrimSpace(string(data))
-		if text != "" {
-			v, err := strconv.ParseUint(text, 10, 64)
-			if err != nil {
-				return 0, fmt.Errorf("parsing sequence %q: %w", text, err)
-			}
-			cur = v
-		}
-	}
-	next := cur + 1
-	if err := atomicWrite(s.sequencePath(id), []byte(strconv.FormatUint(next, 10))); err != nil {
-		return 0, fmt.Errorf("writing sequence: %w", err)
-	}
-	return next, nil
-}
+// ──────────────────────────────────────────────────────────────────────────
+// Tasks
+// ──────────────────────────────────────────────────────────────────────────
 
 func (s *Store) CreateTask(projectID ProjectID, status Status, title, description string, tags []string) (Task, error) {
 	title = strings.TrimSpace(title)
@@ -416,22 +293,24 @@ func (s *Store) CreateTask(projectID ProjectID, status Status, title, descriptio
 	if !isKnownStatus(status) {
 		return Task{}, ErrInvalidStatus
 	}
-	if _, err := s.readManifest(projectID); err != nil {
+
+	ctx := context.Background()
+	tagsJSON, err := encodeTags(tags)
+	if err != nil {
 		return Task{}, err
 	}
 
 	var t Task
-	err := s.withProjectLock(projectID, func() error {
-		n, err := s.bumpSequence(projectID)
-		if err != nil {
+	err = s.DB.Transaction(ctx, func(tx *sql.Tx) error {
+		q := s.DB.WithTx(tx)
+		if err := assertProjectExistsTx(ctx, q, projectID); err != nil {
 			return err
 		}
-		pos, err := s.maxPosition(projectID, status)
+		pos, err := maxPositionTx(ctx, q, projectID, status)
 		if err != nil {
 			return err
 		}
 		t = Task{
-			ID:          TaskID(strconv.FormatUint(n, 10)),
 			Title:       title,
 			Description: strings.TrimSpace(description),
 			Tags:        tags,
@@ -439,7 +318,19 @@ func (s *Store) CreateTask(projectID ProjectID, status Status, title, descriptio
 			ProjectID:   projectID,
 			Status:      status,
 		}
-		return s.writeTask(projectID, status, t)
+		var newID int64
+		err = q.QueryRow(ctx,
+			`INSERT INTO tasks (project_id, title, description, status, position, tags, created_at)
+			 VALUES (?, ?, ?, ?, ?, ?, ?)
+			 RETURNING id`,
+			int64(projectID), t.Title, t.Description,
+			string(status), t.Position, tagsJSON, sqlite.Timestamp(time.Now()),
+		).Scan(&newID)
+		if err != nil {
+			return fmt.Errorf("insert task: %w", err)
+		}
+		t.ID = TaskID(newID)
+		return nil
 	})
 	if err != nil {
 		return Task{}, err
@@ -447,137 +338,183 @@ func (s *Store) CreateTask(projectID ProjectID, status Status, title, descriptio
 	return t, nil
 }
 
-// maxPosition returns the highest Position currently used in a status folder
-// or 0 if the folder is empty. Caller must hold the project lock.
-func (s *Store) maxPosition(projectID ProjectID, status Status) (int, error) {
-	tasks, err := s.listInStatus(projectID, status)
+func assertProjectExistsTx(ctx context.Context, q *sqlite.SQLiteQuery, id ProjectID) error {
+	var exists int
+	err := q.QueryRow(ctx,
+		`SELECT 1 FROM projects WHERE id = ? LIMIT 1`, int64(id),
+	).Scan(&exists)
+	if sqlite.NoRows(err) {
+		return ErrProjectNotFound
+	}
 	if err != nil {
-		return 0, err
+		return fmt.Errorf("check project: %w", err)
 	}
-	max := 0
-	for _, t := range tasks {
-		if t.Position > max {
-			max = t.Position
-		}
-	}
-	return max, nil
+	return nil
 }
 
-func (s *Store) writeTask(projectID ProjectID, status Status, t Task) error {
-	if err := os.MkdirAll(s.statusDir(projectID, status), 0o755); err != nil {
-		return fmt.Errorf("creating status dir: %w", err)
+func maxPositionTx(ctx context.Context, q *sqlite.SQLiteQuery, projectID ProjectID, status Status) (int, error) {
+	var pos sql.NullInt64
+	err := q.QueryRow(ctx,
+		`SELECT MAX(position) FROM tasks WHERE project_id = ? AND status = ?`,
+		int64(projectID), string(status),
+	).Scan(&pos)
+	if err != nil && !sqlite.NoRows(err) {
+		return 0, fmt.Errorf("max position: %w", err)
 	}
-	data, err := json.MarshalIndent(t, "", "  ")
-	if err != nil {
-		return fmt.Errorf("encoding task: %w", err)
+	if !pos.Valid {
+		return 0, nil
 	}
-	return atomicWrite(s.taskPath(projectID, status, t.ID), data)
+	return int(pos.Int64), nil
 }
 
+// GetTask returns the task scoped to projectID. A task that exists but
+// belongs to a different project returns ErrTaskNotFound.
 func (s *Store) GetTask(projectID ProjectID, id TaskID) (Task, error) {
-	if _, err := s.readManifest(projectID); err != nil {
+	if _, err := s.GetProject(projectID); err != nil {
 		return Task{}, err
 	}
-	return s.findTask(projectID, id)
-}
-
-// findTask locates a task across status folders without consulting the
-// manifest or holding any lock. Used both by GetTask and by mutators that
-// already hold the project lock.
-func (s *Store) findTask(projectID ProjectID, id TaskID) (Task, error) {
-	for _, st := range Statuses {
-		path := s.taskPath(projectID, st, id)
-		_, err := os.Stat(path)
-		if errors.Is(err, os.ErrNotExist) {
-			continue
-		}
-		if err != nil {
-			return Task{}, fmt.Errorf("stat task: %w", err)
-		}
-		t, err := readTaskFile(path)
-		if err != nil {
-			return Task{}, err
-		}
-		t.ProjectID = projectID
-		t.Status = st
-		comments, err := s.readComments(projectID, st, id)
-		if err != nil {
-			return Task{}, err
-		}
-		t.Comments = comments
-		return t, nil
+	t, err := s.readTask(context.Background(), projectID, id)
+	if err != nil {
+		return Task{}, err
 	}
-	return Task{}, ErrTaskNotFound
+	comments, err := s.readComments(context.Background(), id)
+	if err != nil {
+		return Task{}, err
+	}
+	t.Comments = comments
+	return t, nil
 }
 
-// ListTasksByProject returns every task across every status. Tasks are
-// grouped by the canonical Statuses order and, within each status, sorted by
-// Position (then by id as a tiebreaker).
+// readTask loads a single task row scoped to (projectID, id). The project
+// scope is enforced in SQL so a forged URL cannot read another project's
+// task.
+func (s *Store) readTask(ctx context.Context, projectID ProjectID, id TaskID) (Task, error) {
+	var (
+		title, description, status, tagsJSON string
+		position                              int
+	)
+	err := s.DB.QueryRow(ctx,
+		`SELECT title, description, status, position, tags
+		   FROM tasks WHERE id = ? AND project_id = ?`,
+		int64(id), int64(projectID),
+	).Scan(&title, &description, &status, &position, &tagsJSON)
+	if sqlite.NoRows(err) {
+		return Task{}, ErrTaskNotFound
+	}
+	if err != nil {
+		return Task{}, fmt.Errorf("loading task: %w", err)
+	}
+	tags, err := decodeTags(tagsJSON)
+	if err != nil {
+		return Task{}, err
+	}
+	return Task{
+		ID:          id,
+		Title:       title,
+		Description: description,
+		Tags:        tags,
+		Position:    position,
+		ProjectID:   projectID,
+		Status:      Status(status),
+	}, nil
+}
+
+func readTaskTx(ctx context.Context, q *sqlite.SQLiteQuery, projectID ProjectID, id TaskID) (Task, error) {
+	var (
+		title, description, status, tagsJSON string
+		position                              int
+	)
+	err := q.QueryRow(ctx,
+		`SELECT title, description, status, position, tags
+		   FROM tasks WHERE id = ? AND project_id = ?`,
+		int64(id), int64(projectID),
+	).Scan(&title, &description, &status, &position, &tagsJSON)
+	if sqlite.NoRows(err) {
+		return Task{}, ErrTaskNotFound
+	}
+	if err != nil {
+		return Task{}, fmt.Errorf("loading task: %w", err)
+	}
+	tags, err := decodeTags(tagsJSON)
+	if err != nil {
+		return Task{}, err
+	}
+	return Task{
+		ID:          id,
+		Title:       title,
+		Description: description,
+		Tags:        tags,
+		Position:    position,
+		ProjectID:   projectID,
+		Status:      Status(status),
+	}, nil
+}
+
+// ListTasksByProject returns every task across every status, grouped by the
+// canonical Statuses order and, within each status, sorted by Position then
+// id.
 func (s *Store) ListTasksByProject(projectID ProjectID) ([]Task, error) {
-	if _, err := s.readManifest(projectID); err != nil {
+	if _, err := s.GetProject(projectID); err != nil {
 		return nil, err
 	}
-	out := make([]Task, 0)
-	for _, st := range Statuses {
-		ts, err := s.listInStatus(projectID, st)
-		if err != nil {
-			return nil, err
-		}
-		out = append(out, ts...)
-	}
-	return out, nil
-}
-
-func (s *Store) listInStatus(projectID ProjectID, status Status) ([]Task, error) {
-	dir := s.statusDir(projectID, status)
-	entries, err := os.ReadDir(dir)
+	ctx := context.Background()
+	rows, err := s.DB.Query(ctx,
+		`SELECT id, title, description, status, position, tags
+		   FROM tasks WHERE project_id = ?`,
+		int64(projectID),
+	)
 	if err != nil {
-		if errors.Is(err, os.ErrNotExist) {
-			return nil, nil
-		}
-		return nil, fmt.Errorf("reading status dir %s: %w", status, err)
+		return nil, fmt.Errorf("listing tasks: %w", err)
 	}
-	out := make([]Task, 0, len(entries))
-	for _, e := range entries {
-		if e.IsDir() {
-			continue
+	defer rows.Close()
+
+	tasks := make([]Task, 0)
+	for rows.Next() {
+		var (
+			id                                   int64
+			title, description, status, tagsJSON string
+			position                             int
+		)
+		if err := rows.Scan(&id, &title, &description, &status, &position, &tagsJSON); err != nil {
+			return nil, fmt.Errorf("scanning task: %w", err)
 		}
-		name := e.Name()
-		if !strings.HasSuffix(name, ".json") || strings.HasSuffix(name, ".comments.json") {
-			continue
-		}
-		t, err := readTaskFile(filepath.Join(dir, name))
+		tags, err := decodeTags(tagsJSON)
 		if err != nil {
 			return nil, err
 		}
-		t.ProjectID = projectID
-		t.Status = status
-		comments, err := s.readComments(projectID, status, t.ID)
-		if err != nil {
-			return nil, err
-		}
-		t.Comments = comments
-		out = append(out, t)
+		tasks = append(tasks, Task{
+			ID:          TaskID(id),
+			Title:       title,
+			Description: description,
+			Tags:        tags,
+			Position:    position,
+			ProjectID:   projectID,
+			Status:      Status(status),
+		})
 	}
-	sort.Slice(out, func(i, j int) bool {
-		if out[i].Position != out[j].Position {
-			return out[i].Position < out[j].Position
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	sort.SliceStable(tasks, func(i, j int) bool {
+		ri := statusRank[tasks[i].Status]
+		rj := statusRank[tasks[j].Status]
+		if ri != rj {
+			return ri < rj
 		}
-		return idLess(out[i].ID, out[j].ID)
+		if tasks[i].Position != tasks[j].Position {
+			return tasks[i].Position < tasks[j].Position
+		}
+		return tasks[i].ID < tasks[j].ID
 	})
-	return out, nil
-}
 
-func readTaskFile(path string) (Task, error) {
-	data, err := os.ReadFile(path)
-	if err != nil {
-		return Task{}, fmt.Errorf("reading task %s: %w", path, err)
+	for i := range tasks {
+		comments, err := s.readComments(ctx, tasks[i].ID)
+		if err != nil {
+			return nil, err
+		}
+		tasks[i].Comments = comments
 	}
-	var t Task
-	if err := json.Unmarshal(data, &t); err != nil {
-		return Task{}, fmt.Errorf("parsing task %s: %w", path, err)
-	}
-	return t, nil
+	return tasks, nil
 }
 
 func (s *Store) UpdateTask(projectID ProjectID, id TaskID, title, description string, status Status, tags []string) (Task, error) {
@@ -588,28 +525,42 @@ func (s *Store) UpdateTask(projectID ProjectID, id TaskID, title, description st
 	if !isKnownStatus(status) {
 		return Task{}, ErrInvalidStatus
 	}
-	if _, err := s.readManifest(projectID); err != nil {
+	tagsJSON, err := encodeTags(tags)
+	if err != nil {
 		return Task{}, err
 	}
 
+	ctx := context.Background()
 	var result Task
-	err := s.withProjectLock(projectID, func() error {
-		cur, err := s.findTask(projectID, id)
+	err = s.DB.Transaction(ctx, func(tx *sql.Tx) error {
+		q := s.DB.WithTx(tx)
+		if err := assertProjectExistsTx(ctx, q, projectID); err != nil {
+			return err
+		}
+		cur, err := readTaskTx(ctx, q, projectID, id)
 		if err != nil {
 			return err
 		}
 		if status != cur.Status {
-			moved, err := s.relocateTask(projectID, id, cur, status)
+			pos, err := maxPositionTx(ctx, q, projectID, status)
 			if err != nil {
 				return err
 			}
-			cur = moved
+			cur.Status = status
+			cur.Position = pos + 1
 		}
 		cur.Title = title
 		cur.Description = strings.TrimSpace(description)
 		cur.Tags = tags
-		if err := s.writeTask(projectID, cur.Status, cur); err != nil {
-			return err
+		_, err = q.Exec(ctx,
+			`UPDATE tasks
+			    SET title = ?, description = ?, status = ?, position = ?, tags = ?
+			  WHERE id = ? AND project_id = ?`,
+			cur.Title, cur.Description, string(cur.Status), cur.Position, tagsJSON,
+			int64(id), int64(projectID),
+		)
+		if err != nil {
+			return fmt.Errorf("update task: %w", err)
 		}
 		result = cur
 		return nil
@@ -621,228 +572,231 @@ func (s *Store) MoveTask(projectID ProjectID, id TaskID, status Status) (Task, e
 	if !isKnownStatus(status) {
 		return Task{}, ErrInvalidStatus
 	}
-	if _, err := s.readManifest(projectID); err != nil {
-		return Task{}, err
-	}
+	ctx := context.Background()
 	var result Task
-	err := s.withProjectLock(projectID, func() error {
-		cur, err := s.findTask(projectID, id)
+	err := s.DB.Transaction(ctx, func(tx *sql.Tx) error {
+		q := s.DB.WithTx(tx)
+		if err := assertProjectExistsTx(ctx, q, projectID); err != nil {
+			return err
+		}
+		cur, err := readTaskTx(ctx, q, projectID, id)
 		if err != nil {
 			return err
 		}
-		moved, err := s.relocateTask(projectID, id, cur, status)
+		if cur.Status == status {
+			result = cur
+			return nil
+		}
+		pos, err := maxPositionTx(ctx, q, projectID, status)
 		if err != nil {
 			return err
 		}
-		result = moved
+		cur.Status = status
+		cur.Position = pos + 1
+		_, err = q.Exec(ctx,
+			`UPDATE tasks SET status = ?, position = ? WHERE id = ? AND project_id = ?`,
+			string(cur.Status), cur.Position, int64(id), int64(projectID),
+		)
+		if err != nil {
+			return fmt.Errorf("move task: %w", err)
+		}
+		result = cur
 		return nil
 	})
-	return result, err
-}
-
-// relocateTask moves a task between status folders, assigning it a fresh
-// position at the bottom of the destination column. The caller must hold the
-// project lock and must have already verified the task currently lives at
-// cur.Status. A no-op when source and target match.
-func (s *Store) relocateTask(projectID ProjectID, id TaskID, cur Task, status Status) (Task, error) {
-	if cur.Status == status {
-		return cur, nil
-	}
-	fromStatus := cur.Status
-	pos, err := s.maxPosition(projectID, status)
 	if err != nil {
 		return Task{}, err
 	}
-	if err := os.MkdirAll(s.statusDir(projectID, status), 0o755); err != nil {
-		return Task{}, fmt.Errorf("creating destination status dir: %w", err)
-	}
-	cur.Status = status
-	cur.Position = pos + 1
-	if err := s.writeTask(projectID, status, cur); err != nil {
+	// Comments are keyed by task_id so they ride along automatically. Reload
+	// them so callers see a complete Task.
+	comments, err := s.readComments(ctx, id)
+	if err != nil {
 		return Task{}, err
 	}
-	if err := os.Remove(s.taskPath(projectID, fromStatus, id)); err != nil {
-		return Task{}, fmt.Errorf("removing old task file: %w", err)
-	}
-	oldComments := s.commentsPath(projectID, fromStatus, id)
-	if _, err := os.Stat(oldComments); err == nil {
-		if err := os.Rename(oldComments, s.commentsPath(projectID, status, id)); err != nil {
-			return Task{}, fmt.Errorf("moving comments file: %w", err)
-		}
-	} else if !errors.Is(err, os.ErrNotExist) {
-		return Task{}, fmt.Errorf("checking comments file: %w", err)
-	}
-	return cur, nil
+	result.Comments = comments
+	return result, nil
 }
+
+func (s *Store) DeleteTask(projectID ProjectID, id TaskID) error {
+	ctx := context.Background()
+	return s.DB.Transaction(ctx, func(tx *sql.Tx) error {
+		q := s.DB.WithTx(tx)
+		if err := assertProjectExistsTx(ctx, q, projectID); err != nil {
+			return err
+		}
+		if _, err := readTaskTx(ctx, q, projectID, id); err != nil {
+			return err
+		}
+		if _, err := q.Exec(ctx,
+			`DELETE FROM task_comments WHERE task_id = ?`, int64(id),
+		); err != nil {
+			return fmt.Errorf("delete comments: %w", err)
+		}
+		if _, err := q.Exec(ctx,
+			`DELETE FROM tasks WHERE id = ? AND project_id = ?`,
+			int64(id), int64(projectID),
+		); err != nil {
+			return fmt.Errorf("delete task: %w", err)
+		}
+		return nil
+	})
+}
+
+// ReorderColumn rewrites Position for every task in a status column to match
+// the order of ids. The slice must list exactly the tasks currently in the
+// column; any mismatch returns an error so a stale client cannot overwrite
+// a concurrent move.
+func (s *Store) ReorderColumn(projectID ProjectID, status Status, ids []TaskID) error {
+	if !isKnownStatus(status) {
+		return ErrInvalidStatus
+	}
+	ctx := context.Background()
+	return s.DB.Transaction(ctx, func(tx *sql.Tx) error {
+		q := s.DB.WithTx(tx)
+		if err := assertProjectExistsTx(ctx, q, projectID); err != nil {
+			return err
+		}
+		rows, err := q.Query(ctx,
+			`SELECT id FROM tasks WHERE project_id = ? AND status = ?`,
+			int64(projectID), string(status),
+		)
+		if err != nil {
+			return fmt.Errorf("listing column: %w", err)
+		}
+		existing := make(map[TaskID]struct{})
+		for rows.Next() {
+			var id int64
+			if err := rows.Scan(&id); err != nil {
+				rows.Close()
+				return fmt.Errorf("scan column: %w", err)
+			}
+			existing[TaskID(id)] = struct{}{}
+		}
+		rows.Close()
+		if err := rows.Err(); err != nil {
+			return err
+		}
+
+		if len(existing) != len(ids) {
+			return fmt.Errorf("reorder: column has %d tasks, got %d ids", len(existing), len(ids))
+		}
+		seen := make(map[TaskID]struct{}, len(ids))
+		for _, id := range ids {
+			if _, ok := existing[id]; !ok {
+				return fmt.Errorf("reorder: task %d not in status %s", id, status)
+			}
+			if _, dup := seen[id]; dup {
+				return fmt.Errorf("reorder: duplicate task %d", id)
+			}
+			seen[id] = struct{}{}
+		}
+		for i, id := range ids {
+			if _, err := q.Exec(ctx,
+				`UPDATE tasks SET position = ? WHERE id = ? AND project_id = ?`,
+				i+1, int64(id), int64(projectID),
+			); err != nil {
+				return fmt.Errorf("reorder update: %w", err)
+			}
+		}
+		return nil
+	})
+}
+
+// ──────────────────────────────────────────────────────────────────────────
+// Comments
+// ──────────────────────────────────────────────────────────────────────────
 
 func (s *Store) AddComment(projectID ProjectID, id TaskID, body string) (Task, error) {
 	body = strings.TrimSpace(body)
 	if body == "" {
 		return Task{}, ErrEmptyComment
 	}
-	if _, err := s.readManifest(projectID); err != nil {
-		return Task{}, err
-	}
+	ctx := context.Background()
 	var result Task
-	err := s.withProjectLock(projectID, func() error {
-		t, err := s.findTask(projectID, id)
+	err := s.DB.Transaction(ctx, func(tx *sql.Tx) error {
+		q := s.DB.WithTx(tx)
+		if err := assertProjectExistsTx(ctx, q, projectID); err != nil {
+			return err
+		}
+		t, err := readTaskTx(ctx, q, projectID, id)
 		if err != nil {
 			return err
 		}
-		comments := append([]string(nil), t.Comments...)
-		comments = append(comments, body)
-		if err := s.writeComments(projectID, t.Status, id, comments); err != nil {
-			return err
+		if _, err := q.Exec(ctx,
+			`INSERT INTO task_comments (task_id, body, created_at) VALUES (?, ?, ?)`,
+			int64(id), body, sqlite.Timestamp(time.Now()),
+		); err != nil {
+			return fmt.Errorf("insert comment: %w", err)
 		}
-		t.Comments = comments
 		result = t
 		return nil
 	})
-	return result, err
-}
-
-// DeleteTask removes a task and its comments file. Errors with ErrTaskNotFound
-// if the task is not present.
-func (s *Store) DeleteTask(projectID ProjectID, id TaskID) error {
-	if _, err := s.readManifest(projectID); err != nil {
-		return err
-	}
-	return s.withProjectLock(projectID, func() error {
-		cur, err := s.findTask(projectID, id)
-		if err != nil {
-			return err
-		}
-		if err := os.Remove(s.taskPath(projectID, cur.Status, id)); err != nil {
-			return fmt.Errorf("removing task file: %w", err)
-		}
-		commentsPath := s.commentsPath(projectID, cur.Status, id)
-		if err := os.Remove(commentsPath); err != nil && !errors.Is(err, os.ErrNotExist) {
-			return fmt.Errorf("removing comments file: %w", err)
-		}
-		return nil
-	})
-}
-
-// ReorderColumn rewrites the Position field of every task in a status folder
-// according to the order of ids. The provided slice must list exactly the
-// tasks currently in the column; any mismatch returns an error so a stale
-// client cannot overwrite a concurrent move.
-func (s *Store) ReorderColumn(projectID ProjectID, status Status, ids []TaskID) error {
-	if !isKnownStatus(status) {
-		return ErrInvalidStatus
-	}
-	if _, err := s.readManifest(projectID); err != nil {
-		return err
-	}
-	return s.withProjectLock(projectID, func() error {
-		existing, err := s.listInStatus(projectID, status)
-		if err != nil {
-			return err
-		}
-		if len(existing) != len(ids) {
-			return fmt.Errorf("reorder: column has %d tasks, got %d ids", len(existing), len(ids))
-		}
-		index := make(map[TaskID]Task, len(existing))
-		for _, t := range existing {
-			index[t.ID] = t
-		}
-		for _, id := range ids {
-			if _, ok := index[id]; !ok {
-				return fmt.Errorf("reorder: task %s not in status %s", id, status)
-			}
-		}
-		seen := make(map[TaskID]struct{}, len(ids))
-		for _, id := range ids {
-			if _, dup := seen[id]; dup {
-				return fmt.Errorf("reorder: duplicate task %s", id)
-			}
-			seen[id] = struct{}{}
-		}
-		for i, id := range ids {
-			t := index[id]
-			t.Position = i + 1
-			if err := s.writeTask(projectID, status, t); err != nil {
-				return err
-			}
-		}
-		return nil
-	})
-}
-
-func (s *Store) readComments(projectID ProjectID, status Status, id TaskID) ([]string, error) {
-	data, err := os.ReadFile(s.commentsPath(projectID, status, id))
 	if err != nil {
-		if errors.Is(err, os.ErrNotExist) {
-			return nil, nil
-		}
-		return nil, fmt.Errorf("reading comments: %w", err)
+		return Task{}, err
 	}
-	var out []string
-	if err := json.Unmarshal(data, &out); err != nil {
-		return nil, fmt.Errorf("parsing comments: %w", err)
+	comments, err := s.readComments(ctx, id)
+	if err != nil {
+		return Task{}, err
 	}
-	return out, nil
+	result.Comments = comments
+	return result, nil
 }
 
-func (s *Store) writeComments(projectID ProjectID, status Status, id TaskID, comments []string) error {
-	if comments == nil {
-		comments = []string{}
-	}
-	data, err := json.MarshalIndent(comments, "", "  ")
+func (s *Store) readComments(ctx context.Context, id TaskID) ([]string, error) {
+	rows, err := s.DB.Query(ctx,
+		`SELECT body FROM task_comments WHERE task_id = ? ORDER BY id ASC`,
+		int64(id),
+	)
 	if err != nil {
-		return fmt.Errorf("encoding comments: %w", err)
+		return nil, fmt.Errorf("loading comments: %w", err)
 	}
-	return atomicWrite(s.commentsPath(projectID, status, id), data)
+	defer rows.Close()
+	out := make([]string, 0)
+	for rows.Next() {
+		var body string
+		if err := rows.Scan(&body); err != nil {
+			return nil, fmt.Errorf("scan comment: %w", err)
+		}
+		out = append(out, body)
+	}
+	return out, rows.Err()
+}
+
+// ──────────────────────────────────────────────────────────────────────────
+// helpers
+// ──────────────────────────────────────────────────────────────────────────
+
+func encodeTags(tags []string) (string, error) {
+	if tags == nil {
+		return "[]", nil
+	}
+	b, err := json.Marshal(tags)
+	if err != nil {
+		return "", fmt.Errorf("encoding tags: %w", err)
+	}
+	return string(b), nil
+}
+
+func decodeTags(s string) ([]string, error) {
+	if s == "" {
+		return nil, nil
+	}
+	var tags []string
+	if err := json.Unmarshal([]byte(s), &tags); err != nil {
+		return nil, fmt.Errorf("decoding tags: %w", err)
+	}
+	if len(tags) == 0 {
+		return nil, nil
+	}
+	return tags, nil
 }
 
 func isKnownStatus(s Status) bool {
-	for _, k := range Statuses {
-		if s == k {
-			return true
-		}
-	}
-	return false
+	_, ok := statusRank[s]
+	return ok
 }
 
-func atomicWrite(path string, data []byte) error {
-	dir := filepath.Dir(path)
-	if err := os.MkdirAll(dir, 0o755); err != nil {
-		return fmt.Errorf("creating dir: %w", err)
-	}
-	tmp, err := os.CreateTemp(dir, ".tmp-*")
-	if err != nil {
-		return fmt.Errorf("creating temp file: %w", err)
-	}
-	tmpName := tmp.Name()
-	if _, err := tmp.Write(data); err != nil {
-		tmp.Close()
-		os.Remove(tmpName)
-		return fmt.Errorf("writing temp file: %w", err)
-	}
-	if err := tmp.Close(); err != nil {
-		os.Remove(tmpName)
-		return fmt.Errorf("closing temp file: %w", err)
-	}
-	if err := os.Rename(tmpName, path); err != nil {
-		os.Remove(tmpName)
-		return fmt.Errorf("renaming temp file: %w", err)
-	}
-	return nil
-}
-
-func idLess(a, b TaskID) bool {
-	ai, aerr := strconv.ParseUint(string(a), 10, 64)
-	bi, berr := strconv.ParseUint(string(b), 10, 64)
-	if aerr == nil && berr == nil {
-		return ai < bi
-	}
-	return string(a) < string(b)
-}
-
-// validateProjectName enforces the input rules for project names:
-// lowercase ASCII letters, digits, '-', '_', and single spaces between
-// words. Leading/trailing whitespace and consecutive spaces are rejected.
-// Length must be 1..50 runes.
+// validateProjectName enforces input rules: lowercase ASCII letters, digits,
+// '-', '_', and single spaces between words. Length 1..50 runes.
 func validateProjectName(name string) error {
 	if name == "" {
 		return ErrInvalidProjectName
@@ -870,14 +824,11 @@ func validateProjectName(name string) error {
 	return nil
 }
 
-// nameToSlug converts a validated project name into a directory-safe slug.
 func nameToSlug(name string) string {
 	return strings.ReplaceAll(name, " ", "-")
 }
 
-// scanNameToSlug converts an arbitrary folder name into a project ID slug:
-// lowercases, keeps [a-z0-9-_], collapses runs of other chars into a single
-// '-', and trims leading/trailing dashes.
+// scanNameToSlug converts an arbitrary folder name into a project ID slug.
 func scanNameToSlug(name string) string {
 	var b strings.Builder
 	dash := false

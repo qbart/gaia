@@ -10,10 +10,12 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"time"
 
 	"github.com/SoftKiwiGames/zen/zen"
+	"github.com/SoftKiwiGames/zen/zen/sqlite"
 	"github.com/qbart/gaia/config"
 	"github.com/qbart/gaia/pm"
 	"github.com/qbart/gaia/web/core"
@@ -48,7 +50,17 @@ func (s *Server) Run(ctx context.Context) {
 			slog.Error("creating GAIA_DATA dir", "err", err.Error(), "path", root)
 			os.Exit(1)
 		}
-		s.Store = core.NewStore(root)
+		dbPath := filepath.Join(root, "gaia.db")
+		db := sqlite.NewSQLite(dbPath, core.Migrations())
+		if err := db.Connect(ctx); err != nil {
+			slog.Error("connecting sqlite", "err", err.Error(), "path", dbPath)
+			os.Exit(1)
+		}
+		if err := db.MigrateWithGoose(ctx, core.MigrationsDir); err != nil {
+			slog.Error("running migrations", "err", err.Error())
+			os.Exit(1)
+		}
+		s.Store = core.NewStore(db)
 	}
 
 	if s.ScanDir == "" {
@@ -133,7 +145,7 @@ func (s *Server) Run(ctx context.Context) {
 				http.Redirect(w, r, "/projects/new", http.StatusSeeOther)
 				return
 			}
-			http.Redirect(w, r, "/projects/"+string(projects[0].ID), http.StatusSeeOther)
+			http.Redirect(w, r, "/projects/"+formatProjectID(projects[0].ID), http.StatusSeeOther)
 		})
 
 		r.Get("/projects/new", func(w http.ResponseWriter, r *http.Request) {
@@ -168,7 +180,7 @@ func (s *Server) Run(ctx context.Context) {
 				ui.Layout(ui.LayoutPage{}, ui.ProjectNewPage(data)).Render(r.Context(), w)
 				return
 			}
-			http.Redirect(w, r, "/projects/"+string(project.ID), http.StatusSeeOther)
+			http.Redirect(w, r, "/projects/"+formatProjectID(project.ID), http.StatusSeeOther)
 		})
 
 		r.Get("/projects/{id}/events", func(w http.ResponseWriter, r *http.Request) {
@@ -176,13 +188,12 @@ func (s *Server) Run(ctx context.Context) {
 		})
 
 		r.Get("/projects/{id}", func(w http.ResponseWriter, r *http.Request) {
-			id := core.ProjectID(zen.Param(r, "id"))
-			data, err := s.boardData(id)
+			project, ok := s.resolveProject(w, r, "id")
+			if !ok {
+				return
+			}
+			data, err := s.boardData(project)
 			if err != nil {
-				if errors.Is(err, core.ErrProjectNotFound) {
-					zen.HttpNotFound(w)
-					return
-				}
 				zen.HttpInternalServerError(w, err.Error())
 				return
 			}
@@ -190,14 +201,8 @@ func (s *Server) Run(ctx context.Context) {
 		})
 
 		r.Get("/projects/{id}/tasks/new", func(w http.ResponseWriter, r *http.Request) {
-			id := core.ProjectID(zen.Param(r, "id"))
-			project, err := s.Store.GetProject(id)
-			if err != nil {
-				if errors.Is(err, core.ErrProjectNotFound) {
-					zen.HttpNotFound(w)
-					return
-				}
-				zen.HttpInternalServerError(w, err.Error())
+			project, ok := s.resolveProject(w, r, "id")
+			if !ok {
 				return
 			}
 			status := pm.Status(r.URL.Query().Get("status"))
@@ -205,7 +210,7 @@ func (s *Server) Run(ctx context.Context) {
 				status = pm.StatusTodo
 			}
 			data := ui.TaskNewPageData{
-				ProjectID:   pm.ProjectID(project.ID),
+				ProjectID:   pm.ProjectID(formatProjectID(project.ID)),
 				ProjectName: project.Name,
 				Status:      status,
 			}
@@ -213,20 +218,18 @@ func (s *Server) Run(ctx context.Context) {
 		})
 
 		r.Get("/projects/{id}/tasks/{taskID}/edit", func(w http.ResponseWriter, r *http.Request) {
-			id := core.ProjectID(zen.Param(r, "id"))
-			taskID := core.TaskID(zen.Param(r, "taskID"))
-			project, err := s.Store.GetProject(id)
-			if err != nil {
-				if errors.Is(err, core.ErrProjectNotFound) {
-					zen.HttpNotFound(w)
-					return
-				}
-				zen.HttpInternalServerError(w, err.Error())
+			project, ok := s.resolveProject(w, r, "id")
+			if !ok {
 				return
 			}
-			task, err := s.Store.GetTask(id, taskID)
+			taskID, ok := parseTaskIDParam(r, "taskID")
+			if !ok {
+				zen.HttpNotFound(w)
+				return
+			}
+			task, err := s.Store.GetTask(project.ID, taskID)
 			if err != nil {
-				if errors.Is(err, core.ErrTaskNotFound) || errors.Is(err, core.ErrProjectNotFound) {
+				if errors.Is(err, core.ErrTaskNotFound) {
 					zen.HttpNotFound(w)
 					return
 				}
@@ -235,11 +238,11 @@ func (s *Server) Run(ctx context.Context) {
 			}
 			pmTask := toPMTask(task)
 			if ui.IsReadOnlyStatus(pmTask.Status) {
-				http.Redirect(w, r, "/projects/"+string(id), http.StatusSeeOther)
+				http.Redirect(w, r, "/projects/"+formatProjectID(project.ID), http.StatusSeeOther)
 				return
 			}
 			data := ui.TaskEditPageData{
-				ProjectID:   pm.ProjectID(project.ID),
+				ProjectID:   pm.ProjectID(formatProjectID(project.ID)),
 				ProjectName: project.Name,
 				TaskID:      pmTask.ID,
 				Status:      pmTask.Status,
@@ -251,15 +254,22 @@ func (s *Server) Run(ctx context.Context) {
 		})
 
 		r.Post("/projects/{id}/tasks/{taskID}/comments", func(w http.ResponseWriter, r *http.Request) {
-			id := core.ProjectID(zen.Param(r, "id"))
-			taskID := core.TaskID(zen.Param(r, "taskID"))
+			project, ok := s.resolveProject(w, r, "id")
+			if !ok {
+				return
+			}
+			taskID, ok := parseTaskIDParam(r, "taskID")
+			if !ok {
+				zen.HttpNotFound(w)
+				return
+			}
 			if err := r.ParseForm(); err != nil {
 				zen.HttpBadRequest(w, err, "invalid form")
 				return
 			}
-			task, err := s.Store.GetTask(id, taskID)
+			task, err := s.Store.GetTask(project.ID, taskID)
 			if err != nil {
-				if errors.Is(err, core.ErrTaskNotFound) || errors.Is(err, core.ErrProjectNotFound) {
+				if errors.Is(err, core.ErrTaskNotFound) {
 					zen.HttpNotFound(w)
 					return
 				}
@@ -272,18 +282,9 @@ func (s *Server) Run(ctx context.Context) {
 				return
 			}
 			body := r.FormValue("body")
-			if _, err := s.Store.AddComment(id, taskID, body); err != nil {
-				project, berr := s.Store.GetProject(id)
-				if berr != nil {
-					if errors.Is(berr, core.ErrProjectNotFound) {
-						zen.HttpNotFound(w)
-						return
-					}
-					zen.HttpInternalServerError(w, berr.Error())
-					return
-				}
+			if _, err := s.Store.AddComment(project.ID, taskID, body); err != nil {
 				data := ui.TaskEditPageData{
-					ProjectID:    pm.ProjectID(project.ID),
+					ProjectID:    pm.ProjectID(formatProjectID(project.ID)),
 					ProjectName:  project.Name,
 					TaskID:       pmTask.ID,
 					Status:       pmTask.Status,
@@ -297,19 +298,26 @@ func (s *Server) Run(ctx context.Context) {
 				ui.Layout(ui.LayoutPage{}, ui.TaskEditPage(data)).Render(r.Context(), w)
 				return
 			}
-			http.Redirect(w, r, "/projects/"+string(id)+"/tasks/"+string(taskID)+"/edit", http.StatusSeeOther)
+			http.Redirect(w, r, "/projects/"+formatProjectID(project.ID)+"/tasks/"+formatTaskID(taskID)+"/edit", http.StatusSeeOther)
 		})
 
 		r.Post("/projects/{id}/tasks/{taskID}", func(w http.ResponseWriter, r *http.Request) {
-			id := core.ProjectID(zen.Param(r, "id"))
-			taskID := core.TaskID(zen.Param(r, "taskID"))
+			project, ok := s.resolveProject(w, r, "id")
+			if !ok {
+				return
+			}
+			taskID, ok := parseTaskIDParam(r, "taskID")
+			if !ok {
+				zen.HttpNotFound(w)
+				return
+			}
 			if err := r.ParseForm(); err != nil {
 				zen.HttpBadRequest(w, err, "invalid form")
 				return
 			}
-			task, err := s.Store.GetTask(id, taskID)
+			task, err := s.Store.GetTask(project.ID, taskID)
 			if err != nil {
-				if errors.Is(err, core.ErrTaskNotFound) || errors.Is(err, core.ErrProjectNotFound) {
+				if errors.Is(err, core.ErrTaskNotFound) {
 					zen.HttpNotFound(w)
 					return
 				}
@@ -328,20 +336,11 @@ func (s *Server) Run(ctx context.Context) {
 			// change past the doing/review/rejected guards.
 			status := task.Status
 
-			if _, err := s.Store.UpdateTask(id, taskID, name, body, status, task.Tags); err != nil {
-				project, berr := s.Store.GetProject(id)
-				if berr != nil {
-					if errors.Is(berr, core.ErrProjectNotFound) {
-						zen.HttpNotFound(w)
-						return
-					}
-					zen.HttpInternalServerError(w, berr.Error())
-					return
-				}
+			if _, err := s.Store.UpdateTask(project.ID, taskID, name, body, status, task.Tags); err != nil {
 				data := ui.TaskEditPageData{
-					ProjectID:   pm.ProjectID(project.ID),
+					ProjectID:   pm.ProjectID(formatProjectID(project.ID)),
 					ProjectName: project.Name,
-					TaskID:      pm.TaskID(taskID),
+					TaskID:      pm.TaskID(formatTaskID(taskID)),
 					Status:      pm.Status(status),
 					Name:        name,
 					Body:        body,
@@ -352,15 +351,22 @@ func (s *Server) Run(ctx context.Context) {
 				ui.Layout(ui.LayoutPage{}, ui.TaskEditPage(data)).Render(r.Context(), w)
 				return
 			}
-			http.Redirect(w, r, "/projects/"+string(id), http.StatusSeeOther)
+			http.Redirect(w, r, "/projects/"+formatProjectID(project.ID), http.StatusSeeOther)
 		})
 
 		r.Post("/projects/{id}/tasks/{taskID}/delete", func(w http.ResponseWriter, r *http.Request) {
-			id := core.ProjectID(zen.Param(r, "id"))
-			taskID := core.TaskID(zen.Param(r, "taskID"))
-			task, err := s.Store.GetTask(id, taskID)
+			project, ok := s.resolveProject(w, r, "id")
+			if !ok {
+				return
+			}
+			taskID, ok := parseTaskIDParam(r, "taskID")
+			if !ok {
+				zen.HttpNotFound(w)
+				return
+			}
+			task, err := s.Store.GetTask(project.ID, taskID)
 			if err != nil {
-				if errors.Is(err, core.ErrTaskNotFound) || errors.Is(err, core.ErrProjectNotFound) {
+				if errors.Is(err, core.ErrTaskNotFound) {
 					zen.HttpNotFound(w)
 					return
 				}
@@ -371,7 +377,7 @@ func (s *Server) Run(ctx context.Context) {
 				zen.HttpForbidden(w)
 				return
 			}
-			if err := s.Store.DeleteTask(id, taskID); err != nil {
+			if err := s.Store.DeleteTask(project.ID, taskID); err != nil {
 				if errors.Is(err, core.ErrTaskNotFound) {
 					zen.HttpNotFound(w)
 					return
@@ -379,20 +385,27 @@ func (s *Server) Run(ctx context.Context) {
 				zen.HttpInternalServerError(w, err.Error())
 				return
 			}
-			http.Redirect(w, r, "/projects/"+string(id), http.StatusSeeOther)
+			http.Redirect(w, r, "/projects/"+formatProjectID(project.ID), http.StatusSeeOther)
 		})
 
 		r.Post("/projects/{id}/tasks/{taskID}/move", func(w http.ResponseWriter, r *http.Request) {
-			id := core.ProjectID(zen.Param(r, "id"))
-			taskID := core.TaskID(zen.Param(r, "taskID"))
+			project, ok := s.resolveProject(w, r, "id")
+			if !ok {
+				return
+			}
+			taskID, ok := parseTaskIDParam(r, "taskID")
+			if !ok {
+				zen.HttpNotFound(w)
+				return
+			}
 			if err := r.ParseForm(); err != nil {
 				zen.HttpBadRequest(w, err, "invalid form")
 				return
 			}
 			target := core.Status(r.FormValue("status"))
-			task, err := s.Store.GetTask(id, taskID)
+			task, err := s.Store.GetTask(project.ID, taskID)
 			if err != nil {
-				if errors.Is(err, core.ErrTaskNotFound) || errors.Is(err, core.ErrProjectNotFound) {
+				if errors.Is(err, core.ErrTaskNotFound) {
 					zen.HttpNotFound(w)
 					return
 				}
@@ -405,7 +418,7 @@ func (s *Server) Run(ctx context.Context) {
 				zen.HttpForbidden(w)
 				return
 			}
-			if _, err := s.Store.MoveTask(id, taskID, target); err != nil {
+			if _, err := s.Store.MoveTask(project.ID, taskID, target); err != nil {
 				if errors.Is(err, core.ErrInvalidStatus) {
 					zen.HttpBadRequest(w, err, "invalid status")
 					return
@@ -417,11 +430,14 @@ func (s *Server) Run(ctx context.Context) {
 				zen.HttpInternalServerError(w, err.Error())
 				return
 			}
-			http.Redirect(w, r, "/projects/"+string(id), http.StatusSeeOther)
+			http.Redirect(w, r, "/projects/"+formatProjectID(project.ID), http.StatusSeeOther)
 		})
 
 		r.Post("/projects/{id}/columns/{status}/order", func(w http.ResponseWriter, r *http.Request) {
-			id := core.ProjectID(zen.Param(r, "id"))
+			project, ok := s.resolveProject(w, r, "id")
+			if !ok {
+				return
+			}
 			status := core.Status(zen.Param(r, "status"))
 			if status == core.StatusDoing {
 				zen.HttpForbidden(w)
@@ -432,8 +448,12 @@ func (s *Server) Run(ctx context.Context) {
 				return
 			}
 			raw := r.FormValue("ids")
-			ids := parseTaskIDs(raw)
-			if err := s.Store.ReorderColumn(id, status, ids); err != nil {
+			ids, err := parseTaskIDs(raw)
+			if err != nil {
+				zen.HttpBadRequest(w, err, err.Error())
+				return
+			}
+			if err := s.Store.ReorderColumn(project.ID, status, ids); err != nil {
 				if errors.Is(err, core.ErrProjectNotFound) {
 					zen.HttpNotFound(w)
 					return
@@ -449,7 +469,10 @@ func (s *Server) Run(ctx context.Context) {
 		})
 
 		r.Post("/projects/{id}/tasks", func(w http.ResponseWriter, r *http.Request) {
-			id := core.ProjectID(zen.Param(r, "id"))
+			project, ok := s.resolveProject(w, r, "id")
+			if !ok {
+				return
+			}
 			if err := r.ParseForm(); err != nil {
 				zen.HttpBadRequest(w, err, "invalid form")
 				return
@@ -462,22 +485,9 @@ func (s *Server) Run(ctx context.Context) {
 				return
 			}
 
-			if _, err := s.Store.CreateTask(id, status, name, body, nil); err != nil {
-				if errors.Is(err, core.ErrProjectNotFound) {
-					zen.HttpNotFound(w)
-					return
-				}
-				project, berr := s.Store.GetProject(id)
-				if berr != nil {
-					if errors.Is(berr, core.ErrProjectNotFound) {
-						zen.HttpNotFound(w)
-						return
-					}
-					zen.HttpInternalServerError(w, berr.Error())
-					return
-				}
+			if _, err := s.Store.CreateTask(project.ID, status, name, body, nil); err != nil {
 				data := ui.TaskNewPageData{
-					ProjectID:   pm.ProjectID(project.ID),
+					ProjectID:   pm.ProjectID(formatProjectID(project.ID)),
 					ProjectName: project.Name,
 					Status:      pm.Status(status),
 					Name:        name,
@@ -488,7 +498,7 @@ func (s *Server) Run(ctx context.Context) {
 				ui.Layout(ui.LayoutPage{}, ui.TaskNewPage(data)).Render(r.Context(), w)
 				return
 			}
-			http.Redirect(w, r, "/projects/"+string(id), http.StatusSeeOther)
+			http.Redirect(w, r, "/projects/"+formatProjectID(project.ID), http.StatusSeeOther)
 		})
 	})
 
@@ -496,15 +506,12 @@ func (s *Server) Run(ctx context.Context) {
 	srv.Run(ctx, s.Envs)
 }
 
-func (s *Server) boardData(id core.ProjectID) (ui.ProjectPageData, error) {
-	if _, err := s.Store.GetProject(id); err != nil {
-		return ui.ProjectPageData{}, err
-	}
+func (s *Server) boardData(project core.Project) (ui.ProjectPageData, error) {
 	projects, err := s.Store.ListProjects()
 	if err != nil {
 		return ui.ProjectPageData{}, err
 	}
-	tasks, err := s.Store.ListTasksByProject(id)
+	tasks, err := s.Store.ListTasksByProject(project.ID)
 	if err != nil {
 		return ui.ProjectPageData{}, err
 	}
@@ -512,10 +519,11 @@ func (s *Server) boardData(id core.ProjectID) (ui.ProjectPageData, error) {
 	for _, t := range tasks {
 		pmTasks = append(pmTasks, toPMTask(t))
 	}
+	active := pm.ProjectID(formatProjectID(project.ID))
 	return ui.ProjectPageData{
 		Projects: toUIProjects(projects),
-		Active:   pm.ProjectID(id),
-		Columns:  ui.BuildColumns(pm.ProjectID(id), pmTasks),
+		Active:   active,
+		Columns:  ui.BuildColumns(active, pmTasks),
 	}, nil
 }
 
@@ -523,7 +531,7 @@ func toUIProjects(in []core.Project) []ui.Project {
 	out := make([]ui.Project, 0, len(in))
 	for _, p := range in {
 		out = append(out, ui.Project{
-			ID:   pm.ProjectID(p.ID),
+			ID:   pm.ProjectID(formatProjectID(p.ID)),
 			Name: p.Name,
 			Icon: iconFromName(p.Name),
 		})
@@ -533,8 +541,8 @@ func toUIProjects(in []core.Project) []ui.Project {
 
 func toPMTask(t core.Task) pm.Task {
 	return pm.Task{
-		ID:        pm.TaskID(t.ID),
-		ProjectID: pm.ProjectID(t.ProjectID),
+		ID:        pm.TaskID(formatTaskID(t.ID)),
+		ProjectID: pm.ProjectID(formatProjectID(t.ProjectID)),
 		Name:      t.Title,
 		Body:      t.Description,
 		Status:    pm.Status(t.Status),
@@ -577,7 +585,7 @@ func (s *Server) bridgeWorkerToSSE(ctx context.Context, h *sse.Server) {
 		case log := <-s.Worker.Output:
 			msg := &sse.Message{Type: sse.Type(log.Stream)}
 			msg.AppendData(log.Text)
-			_ = h.Publish(msg, string(log.ProjectID))
+			_ = h.Publish(msg, formatProjectID(log.ProjectID))
 		}
 	}
 }
@@ -658,9 +666,64 @@ func deriveCloneDir(url string) string {
 	return s
 }
 
-// parseTaskIDs splits a comma-separated list of task ids, trimming whitespace
-// and dropping empty entries. Empty input yields an empty slice (not nil).
-func parseTaskIDs(raw string) []core.TaskID {
+// parseTaskIDParam reads {name} from the request and parses it as a positive
+// int64 task id. Returns ok=false when the segment isn't a valid id — the
+// caller is expected to respond 404.
+func parseTaskIDParam(r *http.Request, name string) (core.TaskID, bool) {
+	v, err := strconv.ParseInt(zen.Param(r, name), 10, 64)
+	if err != nil || v <= 0 {
+		return 0, false
+	}
+	return core.TaskID(v), true
+}
+
+// formatTaskID renders an internal task id for URL paths, JSON bodies, and
+// the pm.TaskID boundary type (which is a string).
+func formatTaskID(id core.TaskID) string {
+	return strconv.FormatInt(int64(id), 10)
+}
+
+// formatProjectID renders an internal project id for URL paths and the
+// pm.ProjectID boundary type.
+func formatProjectID(id core.ProjectID) string {
+	return strconv.FormatInt(int64(id), 10)
+}
+
+// parseProjectIDParam reads {name} from the request and parses it as a
+// positive int64 project id. Returns ok=false when the segment isn't a
+// valid id — the caller is expected to respond 404.
+func parseProjectIDParam(r *http.Request, name string) (core.ProjectID, bool) {
+	v, err := strconv.ParseInt(zen.Param(r, name), 10, 64)
+	if err != nil || v <= 0 {
+		return 0, false
+	}
+	return core.ProjectID(v), true
+}
+
+// resolveProject reads {name} from the URL as an integer project id and
+// loads the project. Writes 404 (and returns ok=false) on parse failure or
+// missing project; writes 500 on other DB errors.
+func (s *Server) resolveProject(w http.ResponseWriter, r *http.Request, name string) (core.Project, bool) {
+	v, err := strconv.ParseInt(zen.Param(r, name), 10, 64)
+	if err != nil || v <= 0 {
+		zen.HttpNotFound(w)
+		return core.Project{}, false
+	}
+	project, err := s.Store.GetProject(core.ProjectID(v))
+	if err != nil {
+		if errors.Is(err, core.ErrProjectNotFound) {
+			zen.HttpNotFound(w)
+		} else {
+			zen.HttpInternalServerError(w, err.Error())
+		}
+		return core.Project{}, false
+	}
+	return project, true
+}
+
+// parseTaskIDs splits a comma-separated list of task ids. Empty input yields
+// an empty slice. Returns an error if any entry is not a positive int64.
+func parseTaskIDs(raw string) ([]core.TaskID, error) {
 	parts := strings.Split(raw, ",")
 	out := make([]core.TaskID, 0, len(parts))
 	for _, p := range parts {
@@ -668,7 +731,11 @@ func parseTaskIDs(raw string) []core.TaskID {
 		if p == "" {
 			continue
 		}
-		out = append(out, core.TaskID(p))
+		v, err := strconv.ParseInt(p, 10, 64)
+		if err != nil || v <= 0 {
+			return nil, fmt.Errorf("invalid task id %q", p)
+		}
+		out = append(out, core.TaskID(v))
 	}
-	return out
+	return out, nil
 }

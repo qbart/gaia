@@ -43,7 +43,11 @@ type taskAPIResource struct {
 }
 
 func (res *taskAPIResource) Index(w http.ResponseWriter, r *http.Request) {
-	projectID := core.ProjectID(zen.Param(r, "projectID"))
+	projectID, ok := parseProjectIDParam(r, "projectID")
+	if !ok {
+		zen.HttpNotFound(w)
+		return
+	}
 	statusFilter := r.URL.Query().Get("status")
 
 	tasks, err := res.store.ListTasksByProject(projectID)
@@ -66,7 +70,11 @@ func (res *taskAPIResource) Index(w http.ResponseWriter, r *http.Request) {
 }
 
 func (res *taskAPIResource) Create(w http.ResponseWriter, r *http.Request) {
-	projectID := core.ProjectID(zen.Param(r, "projectID"))
+	projectID, ok := parseProjectIDParam(r, "projectID")
+	if !ok {
+		zen.HttpNotFound(w)
+		return
+	}
 	req, err := zen.ParseAndValidateJSON[pm.GaiaCreateTaskRequest](r.Body)
 	if err != nil {
 		zen.HttpBadRequest(w, err, err.Error())
@@ -97,8 +105,16 @@ func (res *taskAPIResource) Create(w http.ResponseWriter, r *http.Request) {
 // the AI agent's lane and the agent calls this endpoint to claim work.
 func apiMoveTask(store *core.Store) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		projectID := core.ProjectID(zen.Param(r, "projectID"))
-		taskID := core.TaskID(zen.Param(r, "taskID"))
+		projectID, ok := parseProjectIDParam(r, "projectID")
+		if !ok {
+			zen.HttpNotFound(w)
+			return
+		}
+		taskID, ok := parseTaskIDParam(r, "taskID")
+		if !ok {
+			zen.HttpNotFound(w)
+			return
+		}
 		req, err := zen.ParseAndValidateJSON[pm.GaiaMoveRequest](r.Body)
 		if err != nil {
 			zen.HttpBadRequest(w, err, err.Error())
@@ -123,8 +139,16 @@ func apiMoveTask(store *core.Store) http.HandlerFunc {
 // apiCommentTask handles `POST /api/projects/{projectID}/tasks/{taskID}/comments`.
 func apiCommentTask(store *core.Store) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		projectID := core.ProjectID(zen.Param(r, "projectID"))
-		taskID := core.TaskID(zen.Param(r, "taskID"))
+		projectID, ok := parseProjectIDParam(r, "projectID")
+		if !ok {
+			zen.HttpNotFound(w)
+			return
+		}
+		taskID, ok := parseTaskIDParam(r, "taskID")
+		if !ok {
+			zen.HttpNotFound(w)
+			return
+		}
 		req, err := zen.ParseAndValidateJSON[pm.GaiaCommentRequest](r.Body)
 		if err != nil {
 			zen.HttpBadRequest(w, err, err.Error())
@@ -156,7 +180,7 @@ func toGaiaTask(t core.Task) pm.GaiaTask {
 		comments = []string{}
 	}
 	return pm.GaiaTask{
-		ID:       string(t.ID),
+		ID:       formatTaskID(t.ID),
 		Name:     t.Title,
 		Body:     t.Description,
 		Status:   string(t.Status),

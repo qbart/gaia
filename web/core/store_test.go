@@ -1,21 +1,34 @@
 package core_test
 
 import (
-	"encoding/json"
+	"context"
 	"errors"
-	"os"
 	"path/filepath"
-	"sort"
 	"strings"
 	"sync"
 	"testing"
 
+	"github.com/SoftKiwiGames/zen/zen/sqlite"
 	"github.com/qbart/gaia/web/core"
 )
 
+func newStoreAt(t *testing.T, path string) *core.Store {
+	t.Helper()
+	db := sqlite.NewSQLite(path, core.Migrations())
+	ctx := context.Background()
+	if err := db.Connect(ctx); err != nil {
+		t.Fatalf("connect: %v", err)
+	}
+	if err := db.MigrateWithGoose(ctx, core.MigrationsDir); err != nil {
+		t.Fatalf("migrate: %v", err)
+	}
+	t.Cleanup(func() { db.Close(ctx) })
+	return core.NewStore(db)
+}
+
 func newTempStore(t *testing.T) *core.Store {
 	t.Helper()
-	return core.NewStore(t.TempDir())
+	return newStoreAt(t, filepath.Join(t.TempDir(), "test.db"))
 }
 
 func mustCreateProject(t *testing.T, s *core.Store, name string) core.Project {
@@ -27,125 +40,24 @@ func mustCreateProject(t *testing.T, s *core.Store, name string) core.Project {
 	return p
 }
 
-func TestNextSequence_StartsAtOne(t *testing.T) {
-	s := newTempStore(t)
-	p := mustCreateProject(t, s, "gaia")
-
-	n, err := s.NextSequence(p.ID)
-	if err != nil {
-		t.Fatalf("NextSequence: %v", err)
-	}
-	if n != 1 {
-		t.Fatalf("first sequence = %d, want 1", n)
-	}
-}
-
-func TestNextSequence_Increments(t *testing.T) {
-	s := newTempStore(t)
-	p := mustCreateProject(t, s, "gaia")
-
-	for want := uint64(1); want <= 5; want++ {
-		got, err := s.NextSequence(p.ID)
-		if err != nil {
-			t.Fatalf("NextSequence: %v", err)
-		}
-		if got != want {
-			t.Fatalf("got %d, want %d", got, want)
-		}
-	}
-}
-
-func TestNextSequence_PersistsAcrossInstances(t *testing.T) {
-	root := t.TempDir()
-	s1 := core.NewStore(root)
-	p := mustCreateProject(t, s1, "gaia")
-	for i := 0; i < 3; i++ {
-		if _, err := s1.NextSequence(p.ID); err != nil {
-			t.Fatalf("NextSequence: %v", err)
-		}
-	}
-
-	s2 := core.NewStore(root)
-	got, err := s2.NextSequence(p.ID)
-	if err != nil {
-		t.Fatalf("NextSequence on fresh store: %v", err)
-	}
-	if got != 4 {
-		t.Fatalf("got %d, want 4", got)
-	}
-}
-
-func TestNextSequence_Concurrent_Unique(t *testing.T) {
-	s := newTempStore(t)
-	p := mustCreateProject(t, s, "gaia")
-
-	const N = 50
-	var wg sync.WaitGroup
-	results := make([]uint64, N)
-	wg.Add(N)
-	for i := 0; i < N; i++ {
-		go func(i int) {
-			defer wg.Done()
-			n, err := s.NextSequence(p.ID)
-			if err != nil {
-				t.Errorf("NextSequence: %v", err)
-				return
-			}
-			results[i] = n
-		}(i)
-	}
-	wg.Wait()
-
-	sort.Slice(results, func(i, j int) bool { return results[i] < results[j] })
-	for i, v := range results {
-		if v != uint64(i+1) {
-			t.Fatalf("results[%d] = %d, want %d (got %v)", i, v, i+1, results)
-		}
-	}
-}
-
-func TestCreateProject_WritesManifest(t *testing.T) {
+func TestCreateProject_PersistsAndAssignsSlug(t *testing.T) {
 	s := newTempStore(t)
 	p, err := s.CreateProject("gaia")
 	if err != nil {
 		t.Fatalf("CreateProject: %v", err)
 	}
-	if p.ID == "" {
-		t.Fatalf("expected non-empty id")
+	if p.ID <= 0 {
+		t.Fatalf("id = %d, want > 0", p.ID)
 	}
-	if p.Name != "gaia" {
-		t.Fatalf("name = %q, want Gaia", p.Name)
+	if p.Slug != "gaia" || p.Name != "gaia" {
+		t.Fatalf("project = %+v", p)
 	}
-
-	manifestPath := filepath.Join(s.Root, string(p.ID), "manifest.json")
-	data, err := os.ReadFile(manifestPath)
+	got, err := s.GetProject(p.ID)
 	if err != nil {
-		t.Fatalf("read manifest: %v", err)
+		t.Fatalf("GetProject: %v", err)
 	}
-	var m map[string]any
-	if err := json.Unmarshal(data, &m); err != nil {
-		t.Fatalf("unmarshal manifest: %v", err)
-	}
-	if m["name"] != "gaia" {
-		t.Fatalf("manifest name = %v, want Gaia", m["name"])
-	}
-
-	seqPath := filepath.Join(s.Root, string(p.ID), "sequence")
-	if data, err := os.ReadFile(seqPath); err != nil {
-		t.Fatalf("read sequence: %v", err)
-	} else if string(data) != "0" {
-		t.Fatalf("initial sequence = %q, want 0", string(data))
-	}
-
-	for _, st := range core.Statuses {
-		dir := filepath.Join(s.Root, string(p.ID), "tasks", string(st))
-		info, err := os.Stat(dir)
-		if err != nil {
-			t.Fatalf("stat status dir %s: %v", st, err)
-		}
-		if !info.IsDir() {
-			t.Fatalf("%s is not a dir", dir)
-		}
+	if got.Slug != "gaia" || got.Name != "gaia" {
+		t.Fatalf("reloaded = %+v", got)
 	}
 }
 
@@ -168,11 +80,14 @@ func TestCreateProject_DedupesSlug(t *testing.T) {
 		t.Fatalf("CreateProject b: %v", err)
 	}
 	if a.ID == b.ID {
-		t.Fatalf("duplicate ids: %s", a.ID)
+		t.Fatalf("duplicate ids: %d", a.ID)
+	}
+	if b.Slug != "gaia-2" {
+		t.Fatalf("second slug = %q, want gaia-2", b.Slug)
 	}
 }
 
-func TestListProjects_SortedByID(t *testing.T) {
+func TestListProjects_SortedBySlug(t *testing.T) {
 	s := newTempStore(t)
 	mustCreateProject(t, s, "zen")
 	mustCreateProject(t, s, "atlas")
@@ -185,32 +100,17 @@ func TestListProjects_SortedByID(t *testing.T) {
 	if len(list) != 3 {
 		t.Fatalf("len = %d, want 3", len(list))
 	}
-	want := []core.ProjectID{"atlas", "gaia", "zen"}
+	want := []string{"atlas", "gaia", "zen"}
 	for i, p := range list {
-		if p.ID != want[i] {
-			t.Fatalf("list[%d].ID = %q, want %q", i, p.ID, want[i])
+		if p.Slug != want[i] {
+			t.Fatalf("list[%d].Slug = %q, want %q", i, p.Slug, want[i])
 		}
-	}
-}
-
-func TestListProjects_IgnoresUnrelatedDirs(t *testing.T) {
-	s := newTempStore(t)
-	mustCreateProject(t, s, "gaia")
-	if err := os.MkdirAll(filepath.Join(s.Root, "garbage"), 0o755); err != nil {
-		t.Fatalf("mkdir garbage: %v", err)
-	}
-	list, err := s.ListProjects()
-	if err != nil {
-		t.Fatalf("ListProjects: %v", err)
-	}
-	if len(list) != 1 || list[0].ID != "gaia" {
-		t.Fatalf("list = %+v", list)
 	}
 }
 
 func TestGetProject_NotFound(t *testing.T) {
 	s := newTempStore(t)
-	_, err := s.GetProject("missing")
+	_, err := s.GetProject(99999)
 	if !errors.Is(err, core.ErrProjectNotFound) {
 		t.Fatalf("err = %v, want ErrProjectNotFound", err)
 	}
@@ -228,7 +128,7 @@ func TestGetProject_Found(t *testing.T) {
 	}
 }
 
-func TestCreateTask_WritesFileAndAssignsID(t *testing.T) {
+func TestCreateTask_AssignsAutoincrementIDs(t *testing.T) {
 	s := newTempStore(t)
 	p := mustCreateProject(t, s, "gaia")
 
@@ -236,8 +136,8 @@ func TestCreateTask_WritesFileAndAssignsID(t *testing.T) {
 	if err != nil {
 		t.Fatalf("CreateTask: %v", err)
 	}
-	if task.ID != "1" {
-		t.Fatalf("ID = %q, want 1", task.ID)
+	if task.ID <= 0 {
+		t.Fatalf("ID = %d, want > 0", task.ID)
 	}
 	if task.Title != "implement core" || task.Description != "Body text" {
 		t.Fatalf("task fields wrong: %+v", task)
@@ -246,36 +146,26 @@ func TestCreateTask_WritesFileAndAssignsID(t *testing.T) {
 		t.Fatalf("status = %q", task.Status)
 	}
 
-	path := filepath.Join(s.Root, string(p.ID), "tasks", string(core.StatusTodo), "1.json")
-	data, err := os.ReadFile(path)
+	reload, err := s.GetTask(p.ID, task.ID)
 	if err != nil {
-		t.Fatalf("read task file: %v", err)
+		t.Fatalf("GetTask: %v", err)
 	}
-	var onDisk struct {
-		ID          string   `json:"id"`
-		Title       string   `json:"title"`
-		Description string   `json:"description"`
-		Tags        []string `json:"tags"`
+	if reload.ID != task.ID {
+		t.Fatalf("reload id = %d, want %d", reload.ID, task.ID)
 	}
-	if err := json.Unmarshal(data, &onDisk); err != nil {
-		t.Fatalf("unmarshal task: %v", err)
+	if reload.Title != "implement core" || reload.Description != "Body text" {
+		t.Fatalf("reload fields wrong: %+v", reload)
 	}
-	if onDisk.Title != "implement core" || onDisk.Description != "Body text" {
-		t.Fatalf("on-disk fields wrong: %+v", onDisk)
-	}
-	if onDisk.ID != "1" {
-		t.Fatalf("on-disk id = %q", onDisk.ID)
-	}
-	if len(onDisk.Tags) != 1 || onDisk.Tags[0] != "core" {
-		t.Fatalf("on-disk tags = %v", onDisk.Tags)
+	if len(reload.Tags) != 1 || reload.Tags[0] != "core" {
+		t.Fatalf("reload tags = %v", reload.Tags)
 	}
 
 	next, err := s.CreateTask(p.ID, core.StatusTodo, "Second", "", nil)
 	if err != nil {
 		t.Fatalf("CreateTask 2: %v", err)
 	}
-	if next.ID != "2" {
-		t.Fatalf("ID2 = %q, want 2", next.ID)
+	if next.ID <= task.ID {
+		t.Fatalf("ID2 = %d, want > %d", next.ID, task.ID)
 	}
 }
 
@@ -299,7 +189,7 @@ func TestCreateTask_InvalidStatus(t *testing.T) {
 
 func TestCreateTask_ProjectMissing(t *testing.T) {
 	s := newTempStore(t)
-	_, err := s.CreateTask("missing", core.StatusTodo, "x", "", nil)
+	_, err := s.CreateTask(99999, core.StatusTodo, "x", "", nil)
 	if !errors.Is(err, core.ErrProjectNotFound) {
 		t.Fatalf("err = %v", err)
 	}
@@ -315,7 +205,7 @@ func TestGetTask_FindsAcrossStatuses(t *testing.T) {
 	for _, want := range []core.Task{a, b, c} {
 		got, err := s.GetTask(p.ID, want.ID)
 		if err != nil {
-			t.Fatalf("GetTask %s: %v", want.ID, err)
+			t.Fatalf("GetTask %d: %v", want.ID, err)
 		}
 		if got.Title != want.Title || got.Status != want.Status {
 			t.Fatalf("got = %+v, want title=%q status=%q", got, want.Title, want.Status)
@@ -326,19 +216,32 @@ func TestGetTask_FindsAcrossStatuses(t *testing.T) {
 func TestGetTask_NotFound(t *testing.T) {
 	s := newTempStore(t)
 	p := mustCreateProject(t, s, "gaia")
-	_, err := s.GetTask(p.ID, "999")
+	_, err := s.GetTask(p.ID, 999)
 	if !errors.Is(err, core.ErrTaskNotFound) {
 		t.Fatalf("err = %v", err)
+	}
+}
+
+// A task from project B must not be readable as if it belonged to project A.
+// The SQL scope check enforces this.
+func TestGetTask_ScopedToProject(t *testing.T) {
+	s := newTempStore(t)
+	a := mustCreateProject(t, s, "alpha")
+	b := mustCreateProject(t, s, "beta")
+	task, _ := s.CreateTask(a.ID, core.StatusTodo, "T", "", nil)
+
+	if _, err := s.GetTask(b.ID, task.ID); !errors.Is(err, core.ErrTaskNotFound) {
+		t.Fatalf("cross-project GetTask err = %v, want ErrTaskNotFound", err)
 	}
 }
 
 func TestListTasksByProject_AcrossStatuses(t *testing.T) {
 	s := newTempStore(t)
 	p := mustCreateProject(t, s, "gaia")
-	_, _ = s.CreateTask(p.ID, core.StatusTodo, "A", "", nil)    // id 1, StatusTodo
-	_, _ = s.CreateTask(p.ID, core.StatusDone, "B", "", nil)    // id 2, StatusDone
-	_, _ = s.CreateTask(p.ID, core.StatusDocs, "C", "", nil)    // id 3, StatusDocs
-	_, _ = s.CreateTask(p.ID, core.StatusArchive, "D", "", nil) // id 4, StatusArchive
+	tTodo, _ := s.CreateTask(p.ID, core.StatusTodo, "A", "", nil)
+	tDone, _ := s.CreateTask(p.ID, core.StatusDone, "B", "", nil)
+	tDocs, _ := s.CreateTask(p.ID, core.StatusDocs, "C", "", nil)
+	tArch, _ := s.CreateTask(p.ID, core.StatusArchive, "D", "", nil)
 
 	tasks, err := s.ListTasksByProject(p.ID)
 	if err != nil {
@@ -348,10 +251,27 @@ func TestListTasksByProject_AcrossStatuses(t *testing.T) {
 		t.Fatalf("len = %d, want 4 (%v)", len(tasks), tasks)
 	}
 	// canonical Statuses order: docs, brainstorm, todo, doing, review, rejected, done, archive
-	for i, want := range []core.TaskID{"3", "1", "2", "4"} {
-		if tasks[i].ID != want {
-			t.Fatalf("tasks[%d].ID = %q, want %q", i, tasks[i].ID, want)
+	want := []core.TaskID{tDocs.ID, tTodo.ID, tDone.ID, tArch.ID}
+	for i, id := range want {
+		if tasks[i].ID != id {
+			t.Fatalf("tasks[%d].ID = %d, want %d", i, tasks[i].ID, id)
 		}
+	}
+}
+
+func TestListTasksByProject_ScopedToProject(t *testing.T) {
+	s := newTempStore(t)
+	a := mustCreateProject(t, s, "alpha")
+	b := mustCreateProject(t, s, "beta")
+	_, _ = s.CreateTask(a.ID, core.StatusTodo, "in-a", "", nil)
+	_, _ = s.CreateTask(b.ID, core.StatusTodo, "in-b", "", nil)
+
+	tasks, err := s.ListTasksByProject(a.ID)
+	if err != nil {
+		t.Fatalf("ListTasksByProject: %v", err)
+	}
+	if len(tasks) != 1 || tasks[0].Title != "in-a" {
+		t.Fatalf("alpha tasks = %+v", tasks)
 	}
 }
 
@@ -377,7 +297,7 @@ func TestUpdateTask_PersistsEdits(t *testing.T) {
 	}
 }
 
-func TestUpdateTask_StatusChangeMovesFile(t *testing.T) {
+func TestUpdateTask_StatusChangePersists(t *testing.T) {
 	s := newTempStore(t)
 	p := mustCreateProject(t, s, "gaia")
 	t1, _ := s.CreateTask(p.ID, core.StatusTodo, "A", "", nil)
@@ -390,13 +310,12 @@ func TestUpdateTask_StatusChangeMovesFile(t *testing.T) {
 		t.Fatalf("status = %q", got.Status)
 	}
 
-	oldPath := filepath.Join(s.Root, string(p.ID), "tasks", string(core.StatusTodo), "1.json")
-	if _, err := os.Stat(oldPath); !errors.Is(err, os.ErrNotExist) {
-		t.Fatalf("old file still present: err=%v", err)
+	reload, err := s.GetTask(p.ID, t1.ID)
+	if err != nil {
+		t.Fatalf("GetTask: %v", err)
 	}
-	newPath := filepath.Join(s.Root, string(p.ID), "tasks", string(core.StatusDoing), "1.json")
-	if _, err := os.Stat(newPath); err != nil {
-		t.Fatalf("new file missing: %v", err)
+	if reload.Status != core.StatusDoing {
+		t.Fatalf("reloaded status = %q", reload.Status)
 	}
 }
 
@@ -408,17 +327,15 @@ func TestMoveTask_BringsCommentsAlong(t *testing.T) {
 		t.Fatalf("AddComment: %v", err)
 	}
 
-	if _, err := s.MoveTask(p.ID, t1.ID, core.StatusDoing); err != nil {
+	moved, err := s.MoveTask(p.ID, t1.ID, core.StatusDoing)
+	if err != nil {
 		t.Fatalf("MoveTask: %v", err)
 	}
-
-	oldComments := filepath.Join(s.Root, string(p.ID), "tasks", string(core.StatusTodo), "1.comments.json")
-	if _, err := os.Stat(oldComments); !errors.Is(err, os.ErrNotExist) {
-		t.Fatalf("old comments still present: err=%v", err)
+	if moved.Status != core.StatusDoing {
+		t.Fatalf("status = %q", moved.Status)
 	}
-	newComments := filepath.Join(s.Root, string(p.ID), "tasks", string(core.StatusDoing), "1.comments.json")
-	if _, err := os.Stat(newComments); err != nil {
-		t.Fatalf("new comments missing: %v", err)
+	if len(moved.Comments) != 1 || moved.Comments[0] != "first" {
+		t.Fatalf("moved comments = %v", moved.Comments)
 	}
 
 	got, err := s.GetTask(p.ID, t1.ID)
@@ -457,7 +374,7 @@ func TestMoveTask_InvalidStatus(t *testing.T) {
 func TestMoveTask_NotFound(t *testing.T) {
 	s := newTempStore(t)
 	p := mustCreateProject(t, s, "gaia")
-	_, err := s.MoveTask(p.ID, "42", core.StatusDoing)
+	_, err := s.MoveTask(p.ID, 42, core.StatusDoing)
 	if !errors.Is(err, core.ErrTaskNotFound) {
 		t.Fatalf("err = %v", err)
 	}
@@ -482,19 +399,6 @@ func TestAddComment_AppendsAndPersists(t *testing.T) {
 	if len(got.Comments) != 2 || got.Comments[0] != "first" || got.Comments[1] != "second" {
 		t.Fatalf("comments = %v", got.Comments)
 	}
-
-	cmtPath := filepath.Join(s.Root, string(p.ID), "tasks", string(core.StatusTodo), "1.comments.json")
-	data, err := os.ReadFile(cmtPath)
-	if err != nil {
-		t.Fatalf("read comments file: %v", err)
-	}
-	var onDisk []string
-	if err := json.Unmarshal(data, &onDisk); err != nil {
-		t.Fatalf("unmarshal: %v", err)
-	}
-	if len(onDisk) != 2 {
-		t.Fatalf("on-disk len = %d", len(onDisk))
-	}
 }
 
 func TestAddComment_Empty(t *testing.T) {
@@ -510,7 +414,7 @@ func TestAddComment_Empty(t *testing.T) {
 func TestAddComment_TaskNotFound(t *testing.T) {
 	s := newTempStore(t)
 	p := mustCreateProject(t, s, "gaia")
-	_, err := s.AddComment(p.ID, "999", "hello")
+	_, err := s.AddComment(p.ID, 999, "hello")
 	if !errors.Is(err, core.ErrTaskNotFound) {
 		t.Fatalf("err = %v", err)
 	}
@@ -541,7 +445,7 @@ func TestCreateTask_Concurrent_UniqueIDs(t *testing.T) {
 			t.Fatalf("CreateTask[%d]: %v", i, err)
 		}
 		if _, dup := seen[ids[i]]; dup {
-			t.Fatalf("duplicate id %q at index %d (all=%v)", ids[i], i, ids)
+			t.Fatalf("duplicate id %d at index %d (all=%v)", ids[i], i, ids)
 		}
 		seen[ids[i]] = struct{}{}
 	}
@@ -554,7 +458,7 @@ func TestCreateTask_Concurrent_UniqueIDs(t *testing.T) {
 		t.Fatalf("ListTasksByProject: %v", err)
 	}
 	if len(tasks) != N {
-		t.Fatalf("on-disk task count = %d, want %d", len(tasks), N)
+		t.Fatalf("stored task count = %d, want %d", len(tasks), N)
 	}
 }
 
@@ -585,18 +489,6 @@ func TestAddComment_Concurrent_NoLostUpdates(t *testing.T) {
 	}
 	if len(got.Comments) != N {
 		t.Fatalf("comments = %d, want %d", len(got.Comments), N)
-	}
-}
-
-func TestProjectLockFile_Created(t *testing.T) {
-	s := newTempStore(t)
-	p := mustCreateProject(t, s, "gaia")
-	if _, err := s.CreateTask(p.ID, core.StatusTodo, "A", "", nil); err != nil {
-		t.Fatalf("CreateTask: %v", err)
-	}
-	lockPath := filepath.Join(s.Root, string(p.ID), ".lock")
-	if _, err := os.Stat(lockPath); err != nil {
-		t.Fatalf("expected project .lock at %s: %v", lockPath, err)
 	}
 }
 
@@ -640,8 +532,8 @@ func TestCreateProject_SlugReplacesSpaces(t *testing.T) {
 	if err != nil {
 		t.Fatalf("CreateProject: %v", err)
 	}
-	if p.ID != "my-project" {
-		t.Fatalf("id = %q, want my-project", p.ID)
+	if p.Slug != "my-project" {
+		t.Fatalf("slug = %q, want my-project", p.Slug)
 	}
 	if p.Name != "my project" {
 		t.Fatalf("name = %q", p.Name)
@@ -689,7 +581,7 @@ func TestListInStatus_SortedByPosition(t *testing.T) {
 	for i, tid := range wantOrder {
 		got, _ := s.GetTask(p.ID, tid)
 		if got.Position != i+1 {
-			t.Fatalf("%s position = %d, want %d", tid, got.Position, i+1)
+			t.Fatalf("%d position = %d, want %d", tid, got.Position, i+1)
 		}
 	}
 }
@@ -703,7 +595,7 @@ func TestReorderColumn_RejectsMismatchedSet(t *testing.T) {
 	if err := s.ReorderColumn(p.ID, core.StatusTodo, []core.TaskID{a.ID}); err == nil {
 		t.Fatalf("expected error on mismatched len")
 	}
-	if err := s.ReorderColumn(p.ID, core.StatusTodo, []core.TaskID{a.ID, "999"}); err == nil {
+	if err := s.ReorderColumn(p.ID, core.StatusTodo, []core.TaskID{a.ID, 999}); err == nil {
 		t.Fatalf("expected error on unknown id")
 	}
 	if err := s.ReorderColumn(p.ID, core.StatusTodo, []core.TaskID{a.ID, a.ID}); err == nil {
@@ -728,7 +620,7 @@ func TestRelocateTask_AssignsPositionAtEndOfTarget(t *testing.T) {
 	}
 }
 
-func TestDeleteTask_RemovesFiles(t *testing.T) {
+func TestDeleteTask_RemovesFromStore(t *testing.T) {
 	s := newTempStore(t)
 	p := mustCreateProject(t, s, "gaia")
 	t1, _ := s.CreateTask(p.ID, core.StatusTodo, "a", "", nil)
@@ -740,21 +632,25 @@ func TestDeleteTask_RemovesFiles(t *testing.T) {
 		t.Fatalf("DeleteTask: %v", err)
 	}
 
-	if _, err := os.Stat(filepath.Join(s.Root, string(p.ID), "tasks", string(core.StatusTodo), "1.json")); !errors.Is(err, os.ErrNotExist) {
-		t.Fatalf("task file still present: %v", err)
-	}
-	if _, err := os.Stat(filepath.Join(s.Root, string(p.ID), "tasks", string(core.StatusTodo), "1.comments.json")); !errors.Is(err, os.ErrNotExist) {
-		t.Fatalf("comments file still present: %v", err)
-	}
 	if _, err := s.GetTask(p.ID, t1.ID); !errors.Is(err, core.ErrTaskNotFound) {
 		t.Fatalf("GetTask after delete: %v", err)
+	}
+
+	t2, _ := s.CreateTask(p.ID, core.StatusTodo, "b", "", nil)
+	got, err := s.GetTask(p.ID, t2.ID)
+	if err != nil {
+		t.Fatalf("GetTask new task: %v", err)
+	}
+	if len(got.Comments) != 0 {
+		t.Fatalf("new task picked up stale comments: %v", got.Comments)
 	}
 }
 
 func TestDeleteTask_NotFound(t *testing.T) {
 	s := newTempStore(t)
 	p := mustCreateProject(t, s, "gaia")
-	if err := s.DeleteTask(p.ID, "999"); !errors.Is(err, core.ErrTaskNotFound) {
+	if err := s.DeleteTask(p.ID, 999); !errors.Is(err, core.ErrTaskNotFound) {
 		t.Fatalf("err = %v", err)
 	}
 }
+
